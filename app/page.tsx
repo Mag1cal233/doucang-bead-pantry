@@ -16,6 +16,23 @@ type ReplacementScope = "all" | "section";
 type ReplacementBrand = "MARD" | "Artkal" | "Perler" | "Hama";
 type ReplacementPreview = { fromBrand: string; fromCode: string; brand: string; toCode: string; color: string; name: string; label: string };
 type ReplacementHistoryItem = { plan: Strategy; cells: GeneratedCell[]; fromCode: string; toCode: string };
+type SavedProject = {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  size: number;
+  plan: Strategy;
+  palette: Array<NonNullable<GeneratedCell>>;
+  grid: number[];
+  preview: string[];
+  beadCount: number;
+  completedColors: string[];
+  ignoreStock: boolean;
+  colorShift: ColorShift;
+  view: PatternView;
+  projectCompleted: boolean;
+};
 
 const swatches: Swatch[] = [
   { brand: "MARD", code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
@@ -94,6 +111,36 @@ const fallbackUsage: UsageItem[] = Object.values(fallbackCodes).map((item) => ({
   brand: "MARD",
   count: catPattern.reduce((sum, row) => sum + [...row].filter((value) => fallbackCodes[value]?.code === item.code).length, 0),
 }));
+
+function encodePattern(cells: GeneratedCell[]) {
+  const palette: Array<NonNullable<GeneratedCell>> = [];
+  const indexes = new Map<string, number>();
+  const grid = cells.map((cell) => {
+    if (!cell) return 0;
+    const key = `${cell.brand ?? "MARD"}::${cell.code}::${cell.color}`;
+    let paletteIndex = indexes.get(key);
+    if (paletteIndex === undefined) {
+      paletteIndex = palette.length;
+      indexes.set(key, paletteIndex);
+      palette.push({ ...cell, brand: cell.brand ?? "MARD" });
+    }
+    return paletteIndex + 1;
+  });
+  return { palette, grid };
+}
+
+function decodePattern(project: Pick<SavedProject, "palette" | "grid">): GeneratedCell[] {
+  return project.grid.map((paletteIndex) => paletteIndex > 0 ? { ...project.palette[paletteIndex - 1] } : null);
+}
+
+function createProjectPreview(cells: GeneratedCell[], size: number) {
+  const previewSize = 12;
+  return Array.from({ length: previewSize * previewSize }, (_, index) => {
+    const row = Math.min(size - 1, Math.floor(Math.floor(index / previewSize) * size / previewSize));
+    const column = Math.min(size - 1, Math.floor((index % previewSize) * size / previewSize));
+    return cells[row * size + column]?.color ?? "transparent";
+  });
+}
 
 const plans = [
   {
@@ -538,6 +585,11 @@ export default function Home() {
   const [selectedPurchaseKeys, setSelectedPurchaseKeys] = useState<string[]>([]);
   const [showBatchReplace, setShowBatchReplace] = useState(false);
   const [batchSimilarity, setBatchSimilarity] = useState(75);
+  const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
+  const [projectsReady, setProjectsReady] = useState(false);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [currentProjectTitle, setCurrentProjectTitle] = useState("我的库存适配图纸");
+  const [showProjects, setShowProjects] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
@@ -562,20 +614,44 @@ export default function Home() {
   }, [inventory, inventoryReady]);
 
   useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("doucang-projects-v1");
+      if (saved) {
+        const parsed = JSON.parse(saved) as SavedProject[];
+        if (Array.isArray(parsed)) setSavedProjects(parsed.filter((item) => item?.id && Array.isArray(item.palette) && Array.isArray(item.grid)).slice(0, 5));
+      }
+    } catch {
+      // Ignore damaged local project data and keep the workspace usable.
+    } finally {
+      setProjectsReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!projectsReady) return;
+    try {
+      window.localStorage.setItem("doucang-projects-v1", JSON.stringify(savedProjects.slice(0, 5)));
+    } catch {
+      flash("作品存储空间已满，请删除旧作品后重试");
+    }
+  }, [projectsReady, savedProjects]);
+
+  useEffect(() => {
     setReplacementPreview(null);
   }, [selectedPlan]);
 
   useEffect(() => {
-    if (!showShoppingList && !showBatchReplace) return;
+    if (!showShoppingList && !showBatchReplace && !showProjects) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShowShoppingList(false);
         setShowBatchReplace(false);
+        setShowProjects(false);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showBatchReplace, showShoppingList]);
+  }, [showBatchReplace, showProjects, showShoppingList]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
@@ -599,6 +675,7 @@ export default function Home() {
   const craftPattern = selectedPattern ?? fallbackPattern;
   const craftSize = selectedPattern ? gridSize : 15;
   const craftUsage = generatedUsage.length ? generatedUsage : fallbackUsage;
+  const projectDisplayTitle = generatedPatterns ? currentProjectTitle : "橘猫午后";
   const purchaseItems = useMemo(() => craftUsage.map((item) => {
     const stock = inventory.find((entry) => entry.brand === item.brand && entry.code === item.code);
     const current = stock?.count ?? 0;
@@ -737,6 +814,36 @@ export default function Home() {
   const activeCatalogPage = Math.min(catalogPage, catalogPageCount - 1);
   const visibleCatalog = filteredCatalog.slice(activeCatalogPage * catalogPageSize, (activeCatalogPage + 1) * catalogPageSize);
 
+  useEffect(() => {
+    if (!projectsReady || !activeProjectId || !selectedPattern) return;
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      const encoded = encodePattern(selectedPattern);
+      setSavedProjects((projects) => {
+        const existing = projects.find((project) => project.id === activeProjectId);
+        const next: SavedProject = {
+          id: activeProjectId,
+          title: currentProjectTitle,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+          size: gridSize,
+          plan: selectedPlan,
+          palette: encoded.palette,
+          grid: encoded.grid,
+          preview: createProjectPreview(selectedPattern, gridSize),
+          beadCount: selectedPattern.filter(Boolean).length,
+          completedColors,
+          ignoreStock,
+          colorShift,
+          view: patternView,
+          projectCompleted,
+        };
+        return [next, ...projects.filter((project) => project.id !== activeProjectId)].slice(0, 5);
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [activeProjectId, colorShift, completedColors, currentProjectTitle, gridSize, ignoreStock, patternView, projectCompleted, projectsReady, selectedPattern, selectedPlan]);
+
   function go(next: Screen) {
     setScreen(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -752,6 +859,54 @@ export default function Home() {
     setProjectCompleted(false);
     setReplacementPreview(null);
     setReplacementHistory([]);
+    setActiveProjectId(null);
+    setCurrentProjectTitle("我的库存适配图纸");
+  }
+
+  function startNewProject() {
+    setGeneratedPatterns(null);
+    setUploadedImage(null);
+    setActiveProjectId(null);
+    setCurrentProjectTitle("我的库存适配图纸");
+    setCompletedColors([]);
+    setProjectCompleted(false);
+    setReplacementPreview(null);
+    setReplacementHistory([]);
+    setPatternView("chart");
+    setShowProjects(false);
+    go("create");
+  }
+
+  function restoreProject(project: SavedProject) {
+    const cells = decodePattern(project);
+    setGeneratedPatterns({ zero: cells, balance: cells, quality: cells });
+    setGridSize(project.size);
+    setSelectedPlan(project.plan);
+    setStrategy(project.plan);
+    setCompletedColors(project.completedColors ?? []);
+    setIgnoreStock(project.ignoreStock);
+    setColorShift(project.colorShift);
+    setPatternView(project.view ?? (project.size > 58 ? "section" : "chart"));
+    setProjectCompleted(project.projectCompleted);
+    setCurrentProjectTitle(project.title || "未命名作品");
+    setActiveProjectId(project.id);
+    setReplacementPreview(null);
+    setReplacementHistory([]);
+    setShowProjects(false);
+    go("craft");
+  }
+
+  function renameProject(id: string, title: string) {
+    setSavedProjects((projects) => projects.map((project) => project.id === id ? { ...project, title, updatedAt: Date.now() } : project));
+    if (activeProjectId === id) setCurrentProjectTitle(title);
+  }
+
+  function deleteProject(id: string) {
+    const project = savedProjects.find((item) => item.id === id);
+    if (!window.confirm(`确定删除“${project?.title || "未命名作品"}”吗？此操作无法撤销。`)) return;
+    setSavedProjects((projects) => projects.filter((item) => item.id !== id));
+    if (activeProjectId === id) setActiveProjectId(null);
+    flash("作品已从当前设备删除");
   }
 
   function adjustInventory(brand: string, code: string, change: number) {
@@ -864,7 +1019,7 @@ export default function Home() {
       return;
     }
     const lines = [
-      `豆仓采购清单｜${generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}`,
+      `豆仓采购清单｜${projectDisplayTitle}`,
       `${craftSize}×${craftSize}｜缺 ${purchaseItems.length} 个色号，共 ${purchaseTotal} 颗`,
       "已按安全库存预留计算",
       "",
@@ -959,6 +1114,8 @@ export default function Home() {
         generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory, colorShift, maxColors),
       ]);
       setGeneratedPatterns({ zero, balance, quality });
+      setActiveProjectId(`project-${Date.now()}`);
+      setCurrentProjectTitle(`库存适配图纸 · ${gridSize}×${gridSize}`);
       setReplacementPreview(null);
       setReplacementHistory([]);
       setSelectedPlan(ignoreStock ? "quality" : strategy);
@@ -987,6 +1144,7 @@ export default function Home() {
           <button className={screen === "craft" ? "active" : ""} onClick={() => go("craft")}>制作中</button>
         </nav>
         <div className="top-actions">
+          <button className="project-pill" onClick={() => setShowProjects(true)}><span>▦</span><b>作品</b><em>{savedProjects.length}</em></button>
           <span className="stock-pill"><i /> {totalStock.toLocaleString()} 颗</span>
           <button className="avatar" aria-label="个人账户">禾</button>
         </div>
@@ -1236,8 +1394,8 @@ export default function Home() {
       {screen === "craft" && (
         <div className="page craft-page">
           <section className="craft-top">
-            <div><span className="step-tag">03 · 制作模式</span><h1>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}</p></div>
-            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
+            <div><span className="step-tag">03 · 制作模式</span><h1>{projectDisplayTitle}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}{activeProjectId && <span className="autosave-state"> · ✓ 已自动保存</span>}</p></div>
+            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, projectDisplayTitle); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
@@ -1251,7 +1409,7 @@ export default function Home() {
               </div>
               {patternView === "chart" ? (
                 <div className="chart-stage">
-                  <div className="chart-title"><div><b>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</b><span>{craftSize} × {craftSize} · 每格均标注品牌色号</span></div><em>每 5 格橙色分区</em></div>
+                  <div className="chart-title"><div><b>{projectDisplayTitle}</b><span>{craftSize} × {craftSize} · 每格均标注品牌色号</span></div><em>每 5 格橙色分区</em></div>
                   <PatternChart cells={displayPattern} size={craftSize} zoom={chartZoom} highlight={replacementPreview ? null : chartHighlight} />
                   <div className="pattern-legend" aria-label="图纸颜色用量">
                     {craftUsage.map((item) => <button key={`${item.brand}-${item.code}`} onClick={() => { setReplacementPreview(null); setHighlight(highlight === item.code ? null : item.code); }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.brand} · {item.name}</span><strong>{item.count} 颗</strong></button>)}
@@ -1394,7 +1552,37 @@ export default function Home() {
         </div>
       )}
 
-      <PrintPatternBook cells={craftPattern} size={craftSize} usage={craftUsage} title={generatedPatterns ? "我的库存适配图纸" : "橘猫午后"} />
+      {showProjects && (
+        <div className="shopping-backdrop" onMouseDown={() => setShowProjects(false)}>
+          <section className="shopping-dialog projects-dialog" role="dialog" aria-modal="true" aria-labelledby="projects-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="shopping-head">
+              <div><span className="step-tag">仅保存在当前设备</span><h2 id="projects-title">我的作品</h2><p>自动保存最近 5 个图纸，包括换色结果和制作进度。</p></div>
+              <button aria-label="关闭作品列表" onClick={() => setShowProjects(false)}>×</button>
+            </header>
+            <div className="projects-local-note"><span>✓</span><p>无需登录云端；清除浏览器数据或更换设备后，这里的作品不会自动迁移。</p></div>
+            <div className="projects-list">
+              {savedProjects.length ? savedProjects.map((project) => {
+                const progressValue = project.projectCompleted ? 100 : project.palette.length ? Math.min(100, Math.round((project.completedColors?.length ?? 0) / project.palette.length * 100)) : 0;
+                return (
+                  <article className={`project-card ${activeProjectId === project.id ? "active" : ""}`} key={project.id}>
+                    <div className="project-thumbnail" aria-hidden="true">{(project.preview ?? []).map((color, index) => <i key={index} style={{ background: color }} />)}</div>
+                    <div className="project-info">
+                      <div className="project-title-row"><input aria-label="作品名称" value={project.title} onChange={(event) => renameProject(project.id, event.target.value)} onBlur={() => { if (!project.title.trim()) renameProject(project.id, "未命名作品"); }} /><span>{activeProjectId === project.id ? "当前" : project.projectCompleted ? "已完成" : "自动保存"}</span></div>
+                      <p>{project.size} × {project.size} · {project.beadCount.toLocaleString()} 颗 · {project.palette.length} 色</p>
+                      <div className="project-progress"><i style={{ width: `${progressValue}%` }} /><span>{progressValue}%</span></div>
+                      <small>更新于 {new Date(project.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
+                    </div>
+                    <div className="project-actions"><button onClick={() => restoreProject(project)}>{activeProjectId === project.id ? "返回制作" : "继续制作"}</button><button className="delete" onClick={() => deleteProject(project.id)}>删除</button></div>
+                  </article>
+                );
+              }) : <div className="projects-empty"><span>▦</span><h3>还没有保存的作品</h3><p>生成第一张图纸后，豆仓会自动开始保存。</p></div>}
+            </div>
+            <footer className="shopping-footer projects-footer"><button onClick={() => setShowProjects(false)}>关闭</button><button className="receive-list" onClick={startNewProject}>＋ 新建作品</button></footer>
+          </section>
+        </div>
+      )}
+
+      <PrintPatternBook cells={craftPattern} size={craftSize} usage={craftUsage} title={projectDisplayTitle} />
 
       <nav className="mobile-nav" aria-label="移动端导航">
         <button className={screen === "home" ? "active" : ""} onClick={() => go("home")}><span>⌂</span>首页</button>
