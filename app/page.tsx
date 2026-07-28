@@ -213,6 +213,90 @@ function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn 
   );
 }
 
+function PrintPatternBook({ cells, size, usage, title }: { cells: GeneratedCell[]; size: number; usage: UsageItem[]; title: string }) {
+  const sectionRows = Math.ceil(size / 10);
+  const sectionColumns = Math.ceil(size / 10);
+  const pageCount = sectionRows * sectionColumns;
+
+  return (
+    <div className="print-book" aria-hidden="true">
+      {Array.from({ length: pageCount }, (_, pageIndex) => {
+        const sectionRow = Math.floor(pageIndex / sectionColumns);
+        const sectionColumn = pageIndex % sectionColumns;
+        const startRow = sectionRow * 10;
+        const startColumn = sectionColumn * 10;
+        const rowCount = Math.min(10, size - startRow);
+        const columnCount = Math.min(10, size - startColumn);
+        const sectionLabel = `${String.fromCharCode(65 + sectionRow)}${sectionColumn + 1}`;
+        const counts = new Map<string, { code: string; color: string; count: number; name: string }>();
+
+        for (let row = 0; row < rowCount; row += 1) {
+          for (let column = 0; column < columnCount; column += 1) {
+            const cell = cells[(startRow + row) * size + startColumn + column];
+            if (!cell) continue;
+            const current = counts.get(cell.code);
+            const usageItem = usage.find((item) => item.code === cell.code);
+            counts.set(cell.code, {
+              code: cell.code,
+              color: cell.color,
+              count: (current?.count ?? 0) + 1,
+              name: usageItem?.name ?? "色卡色",
+            });
+          }
+        }
+        const sectionUsage = [...counts.values()].sort((a, b) => b.count - a.count);
+        const sectionBeads = sectionUsage.reduce((sum, item) => sum + item.count, 0);
+
+        return (
+          <section className="print-page" key={sectionLabel}>
+            <header className="print-header">
+              <div><small>豆仓 · 高清分区施工图</small><h1>{title}</h1><p>{size} × {size} · 共 {cells.filter(Boolean).length} 颗 · 10×10 自动分页</p></div>
+              <div className="print-section-mark"><small>分区</small><strong>{sectionLabel}</strong><span>第 {startRow + 1}–{startRow + rowCount} 行<br />第 {startColumn + 1}–{startColumn + columnCount} 列</span></div>
+            </header>
+            <div className="print-chart" style={{ gridTemplateColumns: `8mm repeat(${columnCount}, 13.5mm)` }}>
+              <span className="print-corner">×</span>
+              {Array.from({ length: columnCount }, (_, column) => {
+                const absoluteColumn = startColumn + column + 1;
+                return <span className={`print-axis ${(absoluteColumn % 5 === 0) ? "major-x" : ""}`} key={`axis-${column}`}>{absoluteColumn}</span>;
+              })}
+              {Array.from({ length: rowCount }, (_, row) => {
+                const absoluteRow = startRow + row + 1;
+                return (
+                  <div className="print-row" key={`row-${row}`}>
+                    <span className={`print-axis print-row-axis ${(absoluteRow % 5 === 0) ? "major-y" : ""}`}>{absoluteRow}</span>
+                    {Array.from({ length: columnCount }, (__, column) => {
+                      const absoluteColumn = startColumn + column + 1;
+                      const cell = cells[(absoluteRow - 1) * size + absoluteColumn - 1];
+                      return (
+                        <span
+                          className={`print-cell ${(absoluteColumn % 5 === 0) ? "major-x" : ""} ${(absoluteRow % 5 === 0) ? "major-y" : ""}`}
+                          key={`cell-${column}`}
+                          style={cell ? { background: cell.color, color: textColor(cell.color) } : undefined}
+                        >
+                          {cell?.code}
+                        </span>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="print-legend-title"><b>本页色号</b><span>{sectionUsage.length} 种颜色 · {sectionBeads} 颗</span></div>
+            <div className="print-legend">
+              {sectionUsage.map((item) => (
+                <div key={item.code} style={{ background: item.color, color: textColor(item.color) }}>
+                  <b>{item.code}</b><span>{item.name}</span><strong>{item.count} 颗</strong>
+                </div>
+              ))}
+            </div>
+            <footer className="print-footer"><span>橙色粗线每 5 格定位 · 空白格无需放豆</span><b>{pageIndex + 1} / {pageCount}</b></footer>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function downloadPatternPng(cells: GeneratedCell[], size: number, usage: UsageItem[], title: string) {
   const cellSize = 38;
   const axisSize = 34;
@@ -334,7 +418,7 @@ function applyColorShift(pixel: { r: number; g: number; b: number }, shift: Colo
   return pixel;
 }
 
-async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], colorShift: ColorShift): Promise<GeneratedCell[]> {
+async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], colorShift: ColorShift, maxColors: number): Promise<GeneratedCell[]> {
   const image = new Image();
   image.src = imageUrl;
   await image.decode();
@@ -356,7 +440,7 @@ async function generatePattern(imageUrl: string, size: number, strategy: Strateg
   const data = context.getImageData(0, 0, size, size).data;
   const stockColors = inventory.map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
   const fullColors = mardColors.map((item) => ({ code: item.code, color: item.hex, name: "MARD 公开参考色", count: 0, safe: 0, limit: Infinity }));
-  const palette = strategy === "quality"
+  let palette = strategy === "quality"
     ? fullColors
     : strategy === "balance"
       ? stockColors.map((item) => ({ ...item, limit: ignoreStock ? Infinity : item.limit + 35 }))
@@ -366,6 +450,24 @@ async function generatePattern(imageUrl: string, size: number, strategy: Strateg
     const offset = index * 4;
     return data[offset + 3] < 32 ? null : applyColorShift({ r: data[offset], g: data[offset + 1], b: data[offset + 2] }, colorShift);
   });
+  if (palette.length > maxColors) {
+    const nearestHits = palette.map((_, paletteIndex) => ({ paletteIndex, count: 0 }));
+    pixels.forEach((pixel) => {
+      if (!pixel) return;
+      let bestIndex = 0;
+      let bestCost = Infinity;
+      palette.forEach((item, paletteIndex) => {
+        const cost = perceptualDistance(pixel, hexToRgb(item.color));
+        if (cost < bestCost) {
+          bestCost = cost;
+          bestIndex = paletteIndex;
+        }
+      });
+      nearestHits[bestIndex].count += 1;
+    });
+    const selectedIndexes = new Set(nearestHits.sort((a, b) => b.count - a.count).slice(0, maxColors).map((item) => item.paletteIndex));
+    palette = palette.filter((_, paletteIndex) => selectedIndexes.has(paletteIndex));
+  }
   const candidates = pixels.map((pixel) => pixel
     ? palette
         .map((item, paletteIndex) => ({ paletteIndex, cost: perceptualDistance(pixel, hexToRgb(item.color)) }))
@@ -407,6 +509,7 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [ignoreStock, setIgnoreStock] = useState(false);
   const [gridSize, setGridSize] = useState(29);
+  const [maxColors, setMaxColors] = useState(12);
   const [generatedPatterns, setGeneratedPatterns] = useState<GeneratedPatterns | null>(null);
   const [patternView, setPatternView] = useState<PatternView>("chart");
   const [chartZoom, setChartZoom] = useState(1);
@@ -661,9 +764,9 @@ export default function Home() {
     setIsGenerating(true);
     try {
       const [zero, balance, quality] = await Promise.all([
-        generatePattern(uploadedImage, gridSize, "zero", ignoreStock, inventory, colorShift),
-        generatePattern(uploadedImage, gridSize, "balance", ignoreStock, inventory, colorShift),
-        generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory, colorShift),
+        generatePattern(uploadedImage, gridSize, "zero", ignoreStock, inventory, colorShift, maxColors),
+        generatePattern(uploadedImage, gridSize, "balance", ignoreStock, inventory, colorShift, maxColors),
+        generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory, colorShift, maxColors),
       ]);
       setGeneratedPatterns({ zero, balance, quality });
       setReplacementPreview(null);
@@ -887,7 +990,7 @@ export default function Home() {
               <div className="setting-block"><label>生成策略</label><div className="strategy-grid">
                 {[{id:"zero",title:"零补货",desc:"完全使用现有库存"},{id:"balance",title:"平衡方案",desc:"允许少量补货"},{id:"quality",title:"效果优先",desc:"保留最多细节"}].map((item) => <button key={item.id} className={strategy === item.id ? "selected" : ""} onClick={() => setStrategy(item.id as Strategy)}><i /><b>{item.title}</b><small>{item.desc}</small></button>)}
               </div></div>
-              <div className="setting-row"><div><label>最大颜色数</label><p>减少零散色块，更容易制作</p></div><select aria-label="最大颜色数" defaultValue="12"><option>8 种</option><option>12 种</option><option>16 种</option></select></div>
+              <div className="setting-row"><div><label>最大颜色数</label><p>减少零散色块，更容易制作</p></div><select aria-label="最大颜色数" value={maxColors} onChange={(event) => setMaxColors(Number(event.target.value))}><option value={8}>8 种</option><option value={12}>12 种</option><option value={16}>16 种</option><option value={24}>24 种</option></select></div>
               <div className="setting-block color-shift-setting">
                 <label>色彩偏转 <span>{({ original: "保持原图", warm: "偏暖修正", cool: "偏冷修正", bright: "提亮修正", soft: "柔和修正" } as Record<ColorShift, string>)[colorShift]}</span></label>
                 <p>当屏幕颜色与豆子效果不协调时，先调整整体色调，再重新匹配库存色号。</p>
@@ -943,7 +1046,7 @@ export default function Home() {
         <div className="page craft-page">
           <section className="craft-top">
             <div><span className="step-tag">03 · 制作模式</span><h1>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}</p></div>
-            <div className="craft-actions"><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
+            <div className="craft-actions"><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
@@ -1017,6 +1120,8 @@ export default function Home() {
           </section>
         </div>
       )}
+
+      <PrintPatternBook cells={craftPattern} size={craftSize} usage={craftUsage} title={generatedPatterns ? "我的库存适配图纸" : "橘猫午后"} />
 
       <nav className="mobile-nav" aria-label="移动端导航">
         <button className={screen === "home" ? "active" : ""} onClick={() => go("home")}><span>⌂</span>首页</button>
