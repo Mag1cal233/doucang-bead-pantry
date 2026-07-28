@@ -528,6 +528,7 @@ export default function Home() {
   const [replacementPreview, setReplacementPreview] = useState<ReplacementPreview | null>(null);
   const [replacementHistory, setReplacementHistory] = useState<ReplacementHistoryItem[]>([]);
   const [showShoppingList, setShowShoppingList] = useState(false);
+  const [selectedPurchaseKeys, setSelectedPurchaseKeys] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
@@ -603,6 +604,8 @@ export default function Home() {
     items: purchaseItems.filter((item) => item.brand === brand),
   })), [purchaseItems]);
   const purchaseTotal = purchaseItems.reduce((sum, item) => sum + item.shortage, 0);
+  const selectedPurchaseItems = purchaseItems.filter((item) => selectedPurchaseKeys.includes(`${item.brand}::${item.code}`));
+  const selectedPurchaseTotal = selectedPurchaseItems.reduce((sum, item) => sum + item.shortage, 0);
   const chartHighlight = selectedPattern ? highlight : (highlight ? fallbackCodes[highlight]?.code ?? highlight : null);
   const previewHighlight = selectedPattern ? highlight : (highlight ? Object.entries(fallbackCodes).find(([, item]) => item.code === highlight)?.[0] ?? highlight : null);
   const sectionRowCount = Math.ceil(craftSize / 10);
@@ -738,6 +741,36 @@ export default function Home() {
     }
     setProjectCompleted(true);
     flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${craftPattern.filter(Boolean).length} 颗`);
+  }
+
+  function openShoppingList() {
+    setSelectedPurchaseKeys(purchaseItems.map((item) => `${item.brand}::${item.code}`));
+    setShowShoppingList(true);
+  }
+
+  function togglePurchaseItem(key: string) {
+    setSelectedPurchaseKeys((keys) => keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]);
+  }
+
+  function receivePurchasedItems() {
+    if (!selectedPurchaseItems.length) {
+      flash("请先勾选已经买到的色号");
+      return;
+    }
+    setInventory((items) => {
+      const next = items.map((item) => ({ ...item }));
+      selectedPurchaseItems.forEach((purchase) => {
+        const existingIndex = next.findIndex((item) => item.brand === purchase.brand && item.code === purchase.code);
+        if (existingIndex >= 0) {
+          next[existingIndex].count += purchase.shortage;
+        } else {
+          next.push({ brand: purchase.brand, code: purchase.code, name: purchase.name, color: purchase.color, count: purchase.shortage, safe: 0 });
+        }
+      });
+      return next;
+    });
+    setSelectedPurchaseKeys([]);
+    flash(`已入库 ${selectedPurchaseItems.length} 个色号，共 ${selectedPurchaseTotal} 颗`);
   }
 
   async function copyShoppingList() {
@@ -1116,7 +1149,7 @@ export default function Home() {
         <div className="page craft-page">
           <section className="craft-top">
             <div><span className="step-tag">03 · 制作模式</span><h1>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}</p></div>
-            <div className="craft-actions"><button className="shopping-action" onClick={() => setShowShoppingList(true)}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
+            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
@@ -1185,7 +1218,7 @@ export default function Home() {
                 </div>
                 {replacementPreview && <div className="replace-confirm"><div><i style={{ background: highlightedUsage.color }} /><span>→</span><i style={{ background: replacementPreview.color }} /><b>{highlightedUsage.code} → {replacementPreview.toCode}</b></div><p>这是屏幕参考色预览，确认后会重新计算用量和缺货。</p><div><button onClick={() => setReplacementPreview(null)}>取消</button><button className="apply" onClick={applyReplacement}>确认替换 {replacementNeeded} 格</button></div></div>}
               </div>}
-              <button className={`purchase-summary ${purchaseItems.length ? "has-shortage" : "enough"}`} onClick={() => setShowShoppingList(true)}>
+              <button className={`purchase-summary ${purchaseItems.length ? "has-shortage" : "enough"}`} onClick={openShoppingList}>
                 <span>{purchaseItems.length ? "袋" : "✓"}</span><div><small>智能采购清单</small><b>{purchaseItems.length ? `缺 ${purchaseItems.length} 个色号 · ${purchaseTotal} 颗` : "当前库存已经足够"}</b><p>已自动扣除可用库存，并保留安全库存</p></div><em>查看 →</em>
               </button>
               <div className="smart-tip"><span>✦</span><div><b>{ignoreStock ? "采购清单模式" : "库存提醒"}</b><p>{ignoreStock ? "缺少的颜色会完整保留，并自动计算需要购买的数量。" : generatedPatterns ? "这张图已经按当前安全库存重新分配颜色。" : "示例图也会根据你的本机库存计算采购缺口。"}</p></div></div>
@@ -1210,23 +1243,26 @@ export default function Home() {
             <div className="shopping-list">
               {purchaseGroups.length ? purchaseGroups.map((group) => (
                 <div className="shopping-brand-group" key={group.brand}>
-                  <div className="shopping-brand-head"><b>{group.brand}</b><span>{group.items.length} 个色号 · 共 {group.items.reduce((sum, item) => sum + item.shortage, 0)} 颗</span></div>
-                  {group.items.map((item) => (
-                    <div className="shopping-row" key={`${group.brand}-${item.code}`}>
-                      <i style={{ background: item.color }} />
+                  <div className="shopping-brand-head"><div><b>{group.brand}</b><span>{group.items.length} 个色号 · 共 {group.items.reduce((sum, item) => sum + item.shortage, 0)} 颗</span></div><button onClick={() => { const groupKeys = group.items.map((item) => `${item.brand}::${item.code}`); const allSelected = groupKeys.every((key) => selectedPurchaseKeys.includes(key)); setSelectedPurchaseKeys((keys) => allSelected ? keys.filter((key) => !groupKeys.includes(key)) : [...new Set([...keys, ...groupKeys])]); }}>{group.items.every((item) => selectedPurchaseKeys.includes(`${item.brand}::${item.code}`)) ? "取消全选" : "全选"}</button></div>
+                  {group.items.map((item) => {
+                    const purchaseKey = `${group.brand}::${item.code}`;
+                    const selected = selectedPurchaseKeys.includes(purchaseKey);
+                    return (
+                    <div className={`shopping-row ${selected ? "selected" : ""}`} key={`${group.brand}-${item.code}`}>
+                      <button className="purchase-check" aria-label={`${selected ? "取消选择" : "选择"} ${group.brand} ${item.code}`} aria-pressed={selected} onClick={() => togglePurchaseItem(purchaseKey)} style={{ "--purchase-color": item.color } as CSSProperties}><span>{selected ? "✓" : ""}</span></button>
                       <div className="shopping-color"><b>{item.code}</b><span>{item.name}</span></div>
                       <div><small>图纸</small><strong>{item.count}</strong></div>
                       <div><small>库存</small><strong>{item.current}</strong></div>
                       <div><small>预留</small><strong>{item.safe}</strong></div>
                       <div className="shopping-shortage"><small>建议购买</small><strong>+{item.shortage}</strong></div>
                     </div>
-                  ))}
+                  );})}
                 </div>
               )) : (
                 <div className="shopping-empty"><span>✓</span><h3>这套图纸不用补货</h3><p>所有色号在保留安全库存后仍然足够。</p></div>
               )}
             </div>
-            <footer className="shopping-footer"><button onClick={() => setShowShoppingList(false)}>返回图纸</button><button onClick={exportShoppingList} disabled={!purchaseItems.length}>导出 CSV</button><button className="copy-list" onClick={copyShoppingList} disabled={!purchaseItems.length}>复制采购清单</button></footer>
+            <footer className="shopping-footer"><button onClick={() => setShowShoppingList(false)}>返回图纸</button><button onClick={exportShoppingList} disabled={!purchaseItems.length}>导出 CSV</button><button onClick={copyShoppingList} disabled={!purchaseItems.length}>复制清单</button><button className="receive-list" onClick={receivePurchasedItems} disabled={!selectedPurchaseItems.length}>已购入库 · {selectedPurchaseTotal} 颗</button></footer>
           </section>
         </div>
       )}
