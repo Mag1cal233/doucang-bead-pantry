@@ -6,6 +6,8 @@ type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
 type Strategy = "zero" | "balance" | "quality";
 type GeneratedCell = { code: string; color: string } | null;
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
+type PatternView = "chart" | "preview";
+type UsageItem = { code: string; color: string; count: number; name: string };
 
 const swatches = [
   { code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
@@ -66,6 +68,23 @@ const pixelColors: Record<string, string> = {
   p: "#e98d8c",
   s: "#91a487",
 };
+
+const fallbackCodes: Record<string, { code: string; name: string; color: string }> = {
+  n: { code: "N2", name: "炭黑", color: "#35302e" },
+  c: { code: "C5", name: "姜黄色", color: "#d89b42" },
+  o: { code: "M1", name: "奶油白", color: "#f5eddb" },
+  p: { code: "M7", name: "蜜桃粉", color: "#e98d8c" },
+  s: { code: "A3", name: "鼠尾草", color: "#91a487" },
+};
+
+const fallbackPattern: GeneratedCell[] = catPattern.flatMap((row) =>
+  [...row].map((value) => value === "." ? null : { code: fallbackCodes[value].code, color: fallbackCodes[value].color }),
+);
+
+const fallbackUsage: UsageItem[] = Object.values(fallbackCodes).map((item) => ({
+  ...item,
+  count: catPattern.reduce((sum, row) => sum + [...row].filter((value) => fallbackCodes[value]?.code === item.code).length, 0),
+}));
 
 const plans = [
   {
@@ -141,6 +160,140 @@ function GeneratedArtwork({ cells, size, highlight }: { cells: GeneratedCell[]; 
       ))}
     </div>
   );
+}
+
+function textColor(background: string) {
+  const { r, g, b } = hexToRgb(background);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 154 ? "#27251f" : "#ffffff";
+}
+
+function PatternChart({ cells, size, zoom, highlight }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null }) {
+  const cellSize = Math.round(30 * zoom);
+  return (
+    <div className="chart-scroll" aria-label={`${size}乘${size}高清带色号施工图`}>
+      <div className="pattern-chart" style={{ "--chart-cell": `${cellSize}px` } as CSSProperties}>
+        <div className="chart-row chart-axis-row">
+          <span className="chart-corner">×</span>
+          {Array.from({ length: size }, (_, column) => <span className={`chart-axis ${((column + 1) % 5 === 0) ? "major-x" : ""}`} key={column}>{column + 1}</span>)}
+        </div>
+        {Array.from({ length: size }, (_, row) => (
+          <div className="chart-row" key={row}>
+            <span className={`chart-axis chart-row-axis ${((row + 1) % 5 === 0) ? "major-y" : ""}`}>{row + 1}</span>
+            {Array.from({ length: size }, (_, column) => {
+              const cell = cells[row * size + column];
+              const dimmed = Boolean(cell && highlight && cell.code !== highlight);
+              return (
+                <span
+                  className={`chart-cell ${((column + 1) % 5 === 0) ? "major-x" : ""} ${((row + 1) % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""}`}
+                  key={column}
+                  style={cell ? { background: cell.color, color: textColor(cell.color) } : undefined}
+                  title={cell ? `${row + 1} 行 ${column + 1} 列 · ${cell.code}` : `${row + 1} 行 ${column + 1} 列 · 留空`}
+                >
+                  {cell?.code}
+                </span>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function downloadPatternPng(cells: GeneratedCell[], size: number, usage: UsageItem[], title: string) {
+  const cellSize = 38;
+  const axisSize = 34;
+  const margin = 42;
+  const titleHeight = 92;
+  const legendColumns = Math.min(6, Math.max(1, usage.length));
+  const legendGap = 12;
+  const legendCardWidth = 170;
+  const legendCardHeight = 58;
+  const legendRows = Math.ceil(usage.length / legendColumns);
+  const gridWidth = axisSize + size * cellSize;
+  const legendWidth = legendColumns * legendCardWidth + (legendColumns - 1) * legendGap;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(gridWidth, legendWidth) + margin * 2;
+  canvas.height = titleHeight + axisSize + size * cellSize + 56 + legendRows * (legendCardHeight + legendGap) + margin;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#302e29";
+  context.font = "700 30px Microsoft YaHei, sans-serif";
+  context.fillText(title, margin, 48);
+  context.fillStyle = "#77736a";
+  context.font = "14px Microsoft YaHei, sans-serif";
+  context.fillText(`${size} × ${size} · ${cells.filter(Boolean).length} 颗 · 高清带色号施工图`, margin, 75);
+
+  const originX = margin;
+  const originY = titleHeight;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  for (let column = 0; column < size; column += 1) {
+    context.fillStyle = "#56524a";
+    context.font = "11px Arial, sans-serif";
+    context.fillText(String(column + 1), originX + axisSize + column * cellSize + cellSize / 2, originY + axisSize / 2);
+  }
+  for (let row = 0; row < size; row += 1) {
+    context.fillStyle = "#56524a";
+    context.font = "11px Arial, sans-serif";
+    context.fillText(String(row + 1), originX + axisSize / 2, originY + axisSize + row * cellSize + cellSize / 2);
+    for (let column = 0; column < size; column += 1) {
+      const cell = cells[row * size + column];
+      const x = originX + axisSize + column * cellSize;
+      const y = originY + axisSize + row * cellSize;
+      context.fillStyle = cell?.color ?? "#ffffff";
+      context.fillRect(x, y, cellSize, cellSize);
+      if (cell) {
+        context.fillStyle = textColor(cell.color);
+        context.font = `700 ${cell.code.length > 3 ? 10 : 11}px Arial, sans-serif`;
+        context.fillText(cell.code, x + cellSize / 2, y + cellSize / 2 + .5);
+      }
+    }
+  }
+
+  context.lineWidth = 1;
+  context.strokeStyle = "#cdd1d1";
+  for (let index = 0; index <= size; index += 1) {
+    const offset = axisSize + index * cellSize;
+    context.beginPath(); context.moveTo(originX + offset, originY + axisSize); context.lineTo(originX + offset, originY + axisSize + size * cellSize); context.stroke();
+    context.beginPath(); context.moveTo(originX + axisSize, originY + offset); context.lineTo(originX + axisSize + size * cellSize, originY + offset); context.stroke();
+  }
+  context.lineWidth = 2;
+  context.strokeStyle = "#e1a15d";
+  for (let index = 5; index < size; index += 5) {
+    const offset = axisSize + index * cellSize;
+    context.beginPath(); context.moveTo(originX + offset, originY); context.lineTo(originX + offset, originY + axisSize + size * cellSize); context.stroke();
+    context.beginPath(); context.moveTo(originX, originY + offset); context.lineTo(originX + axisSize + size * cellSize, originY + offset); context.stroke();
+  }
+
+  const legendY = originY + axisSize + size * cellSize + 44;
+  context.textAlign = "left";
+  usage.forEach((item, index) => {
+    const column = index % legendColumns;
+    const row = Math.floor(index / legendColumns);
+    const x = margin + column * (legendCardWidth + legendGap);
+    const y = legendY + row * (legendCardHeight + legendGap);
+    context.fillStyle = item.color;
+    context.beginPath(); context.roundRect(x, y, legendCardWidth, legendCardHeight, 9); context.fill();
+    context.fillStyle = textColor(item.color);
+    context.font = "700 16px Arial, sans-serif";
+    context.fillText(item.code, x + 15, y + 23);
+    context.font = "12px Microsoft YaHei, sans-serif";
+    context.fillText(`${item.name} · ${item.count} 颗`, x + 15, y + 42);
+  });
+
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${title}-${size}x${size}-高清施工图.png`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, "image/png");
 }
 
 function hexToRgb(hex: string) {
@@ -230,6 +383,9 @@ export default function Home() {
   const [ignoreStock, setIgnoreStock] = useState(false);
   const [gridSize, setGridSize] = useState(29);
   const [generatedPatterns, setGeneratedPatterns] = useState<GeneratedPatterns | null>(null);
+  const [patternView, setPatternView] = useState<PatternView>("chart");
+  const [chartZoom, setChartZoom] = useState(1);
+  const [chartFocus, setChartFocus] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -249,6 +405,11 @@ export default function Home() {
     return [...usage.values()].sort((a, b) => b.count - a.count);
   }, [selectedPattern]);
   const actualProgress = generatedUsage.length ? Math.round((completedColors.length / generatedUsage.length) * 100) : progress;
+  const craftPattern = selectedPattern ?? fallbackPattern;
+  const craftSize = selectedPattern ? gridSize : 15;
+  const craftUsage = generatedUsage.length ? generatedUsage : fallbackUsage;
+  const chartHighlight = selectedPattern ? highlight : (highlight ? fallbackCodes[highlight]?.code ?? highlight : null);
+  const previewHighlight = selectedPattern ? highlight : (highlight ? Object.entries(fallbackCodes).find(([, item]) => item.code === highlight)?.[0] ?? highlight : null);
 
   function go(next: Screen) {
     setScreen(next);
@@ -527,23 +688,39 @@ export default function Home() {
         <div className="page craft-page">
           <section className="craft-top">
             <div><span className="step-tag">03 · 制作模式</span><h1>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}</p></div>
-            <div className="craft-actions"><button className="secondary" onClick={() => flash("图纸 PNG 已准备导出")}>导出图纸</button><button className="primary" onClick={() => flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${selectedPattern?.filter(Boolean).length ?? 225} 颗`)}>完成{ignoreStock ? "作品" : "并扣库存"}</button></div>
+            <div className="craft-actions"><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" onClick={() => flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${selectedPattern?.filter(Boolean).length ?? 225} 颗`)}>完成{ignoreStock ? "作品" : "并扣库存"}</button></div>
           </section>
           <section className="craft-layout">
-            <div className="craft-canvas panel">
-              <div className="canvas-toolbar"><div><button className="active">图纸</button><button>色号</button><button>预览</button></div><span>＋ &nbsp; 100% &nbsp; −</span></div>
-              <div className="large-art">{selectedPattern ? <GeneratedArtwork cells={selectedPattern} size={gridSize} highlight={highlight} /> : <BeadArtwork highlight={highlight} />}</div>
-              <div className="coordinate-hint">点击右侧颜色，只查看该色号的位置</div>
+            <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
+              <div className="canvas-toolbar">
+                <div className="view-switch"><button className={patternView === "chart" ? "active" : ""} onClick={() => setPatternView("chart")}>高清施工图</button><button className={patternView === "preview" ? "active" : ""} onClick={() => setPatternView("preview")}>成品预览</button></div>
+                <div className="chart-tools">
+                  {patternView === "chart" && <><button aria-label="缩小图纸" onClick={() => setChartZoom(Math.max(.6, chartZoom - .2))}>−</button><strong>{Math.round(chartZoom * 100)}%</strong><button aria-label="放大图纸" onClick={() => setChartZoom(Math.min(2, chartZoom + .2))}>＋</button></>}
+                  <button onClick={() => setChartFocus(!chartFocus)}>{chartFocus ? "退出全屏" : "专注查看"}</button>
+                </div>
+              </div>
+              {patternView === "chart" ? (
+                <div className="chart-stage">
+                  <div className="chart-title"><div><b>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</b><span>{craftSize} × {craftSize} · 每格均标注品牌色号</span></div><em>每 5 格橙色分区</em></div>
+                  <PatternChart cells={craftPattern} size={craftSize} zoom={chartZoom} highlight={chartHighlight} />
+                  <div className="pattern-legend" aria-label="图纸颜色用量">
+                    {craftUsage.map((item) => <button key={item.code} onClick={() => setHighlight(highlight === item.code ? null : item.code)} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.name}</span><strong>{item.count} 颗</strong></button>)}
+                  </div>
+                </div>
+              ) : (
+                <div className="preview-stage"><div className="large-art">{selectedPattern ? <GeneratedArtwork cells={selectedPattern} size={gridSize} highlight={previewHighlight} /> : <BeadArtwork highlight={previewHighlight} />}</div><p>预览用于查看整体成品；制作时请切回高清施工图。</p></div>
+              )}
+              <div className="coordinate-hint">可横向、纵向滚动查看；点击右侧颜色可高亮该色号</div>
             </div>
             <aside className="craft-sidebar panel">
               <div className="progress-head"><div><span>制作进度</span><strong>{actualProgress}%</strong></div><div className="progress-track"><i style={{ width: `${actualProgress}%` }} /></div><p>{completedColors.length} / {generatedUsage.length || 5} 个颜色已完成</p></div>
               <div className="color-tasks">
                 {(generatedUsage.length ? generatedUsage.map((item) => ({ key: item.code, ...item })) : [
-                  { key: "n", code: "N2", name: "炭黑", count: 68, color: "#35302e" },
-                  { key: "c", code: "C5", name: "姜黄色", count: 96, color: "#d89b42" },
-                  { key: "o", code: "M1", name: "奶油白", count: 18, color: "#f5eddb" },
-                  { key: "p", code: "M7", name: "蜜桃粉", count: 12, color: "#e98d8c" },
-                  { key: "s", code: "A3", name: "鼠尾草", count: 31, color: "#91a487" },
+                  { key: "N2", code: "N2", name: "炭黑", count: 68, color: "#35302e" },
+                  { key: "C5", code: "C5", name: "姜黄色", count: 96, color: "#d89b42" },
+                  { key: "M1", code: "M1", name: "奶油白", count: 18, color: "#f5eddb" },
+                  { key: "M7", code: "M7", name: "蜜桃粉", count: 12, color: "#e98d8c" },
+                  { key: "A3", code: "A3", name: "鼠尾草", count: 31, color: "#91a487" },
                 ]).map((item) => {
                   const done = completedColors.includes(item.key);
                   return <button key={item.key} className={`${highlight === item.key ? "active" : ""} ${done ? "done" : ""}`} onClick={() => setHighlight(highlight === item.key ? null : item.key)}><i style={{ background: item.color }} /><span><b>{item.code} · {item.name}</b><small>{item.count} 颗</small></span><em onClick={(event) => { event.stopPropagation(); setCompletedColors(done ? completedColors.filter((key) => key !== item.key) : [...completedColors, item.key]); }}>{done ? "✓" : "○"}</em></button>;
