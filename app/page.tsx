@@ -11,6 +11,9 @@ type PatternView = "chart" | "section" | "preview";
 type ColorShift = "original" | "warm" | "cool" | "bright" | "soft";
 type UsageItem = { code: string; color: string; count: number; name: string };
 type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
+type ReplacementScope = "all" | "section";
+type ReplacementPreview = { fromCode: string; toCode: string; color: string; label: string };
+type ReplacementHistoryItem = { plan: Strategy; cells: GeneratedCell[]; fromCode: string; toCode: string };
 
 const swatches: Swatch[] = [
   { brand: "MARD", code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
@@ -418,6 +421,9 @@ export default function Home() {
   const [catalogScope, setCatalogScope] = useState<"all" | "base" | "extended">("all");
   const [catalogSeries, setCatalogSeries] = useState("all");
   const [catalogPage, setCatalogPage] = useState(0);
+  const [replacementScope, setReplacementScope] = useState<ReplacementScope>("all");
+  const [replacementPreview, setReplacementPreview] = useState<ReplacementPreview | null>(null);
+  const [replacementHistory, setReplacementHistory] = useState<ReplacementHistoryItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
@@ -440,6 +446,10 @@ export default function Home() {
     if (!inventoryReady) return;
     window.localStorage.setItem("doucang-inventory-v1", JSON.stringify(inventory));
   }, [inventory, inventoryReady]);
+
+  useEffect(() => {
+    setReplacementPreview(null);
+  }, [selectedPlan]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
@@ -471,6 +481,54 @@ export default function Home() {
   const sectionStartColumn = activeSectionColumn * 10;
   const sectionHeight = Math.min(10, craftSize - sectionStartRow);
   const sectionWidth = Math.min(10, craftSize - sectionStartColumn);
+  const highlightedUsage = highlight ? craftUsage.find((item) => item.code === highlight) : undefined;
+  const replacementNeeded = highlight ? craftPattern.reduce((count, cell, index) => {
+    if (cell?.code !== highlight) return count;
+    if (replacementScope === "all") return count + 1;
+    const row = Math.floor(index / craftSize);
+    const column = index % craftSize;
+    const inSection = row >= sectionStartRow && row < sectionStartRow + sectionHeight && column >= sectionStartColumn && column < sectionStartColumn + sectionWidth;
+    return count + (inSection ? 1 : 0);
+  }, 0) : 0;
+  const replacementOptions = useMemo(() => {
+    if (!generatedPatterns || !highlight || !highlightedUsage) return [];
+    const sourceRgb = hexToRgb(highlightedUsage.color);
+    const sourceWarmth = sourceRgb.r - sourceRgb.b;
+    const scored = mardColors
+      .filter((item) => item.code !== highlight)
+      .map((item) => {
+        const rgb = hexToRgb(item.hex);
+        return { ...item, color: item.hex, distance: perceptualDistance(sourceRgb, rgb), warmth: rgb.r - rgb.b };
+      })
+      .sort((a, b) => a.distance - b.distance);
+    const chosen: Array<(typeof scored)[number] & { label: string }> = [];
+    const add = (label: string, candidate?: (typeof scored)[number]) => {
+      if (candidate && !chosen.some((item) => item.code === candidate.code)) chosen.push({ ...candidate, label });
+    };
+    add("最接近", scored[0]);
+    add("偏暖", scored.find((item) => item.warmth > sourceWarmth + 8));
+    add("偏冷", scored.find((item) => item.warmth < sourceWarmth - 8));
+    for (const candidate of scored) {
+      if (chosen.length >= 3) break;
+      add("备选", candidate);
+    }
+    return chosen.map((item) => {
+      const stock = inventory.find((entry) => entry.brand === "MARD" && entry.code === item.code)?.count ?? 0;
+      return { ...item, available: stock, shortage: Math.max(0, replacementNeeded - stock), similarity: Math.max(0, Math.round(100 - Math.sqrt(item.distance) / 5)) };
+    });
+  }, [generatedPatterns, highlight, highlightedUsage, inventory, replacementNeeded]);
+  const displayPattern = useMemo(() => {
+    if (!replacementPreview) return craftPattern;
+    return craftPattern.map((cell, index) => {
+      if (cell?.code !== replacementPreview.fromCode) return cell;
+      if (replacementScope === "section") {
+        const row = Math.floor(index / craftSize);
+        const column = index % craftSize;
+        if (row < sectionStartRow || row >= sectionStartRow + sectionHeight || column < sectionStartColumn || column >= sectionStartColumn + sectionWidth) return cell;
+      }
+      return { code: replacementPreview.toCode, color: replacementPreview.color };
+    });
+  }, [craftPattern, craftSize, replacementPreview, replacementScope, sectionHeight, sectionStartColumn, sectionStartRow, sectionWidth]);
   const catalogSource = selectedBrand === "MARD"
     ? mardColors.map((item) => ({ code: item.code, color: item.hex, series: item.series, range: item.range, confidence: item.confidence }))
     : demoCatalogColors.map(([code, color]) => ({ code, color, series: code.replace(/\d/g, ""), range: "base" as const, confidence: "reference" as const }));
@@ -498,6 +556,8 @@ export default function Home() {
     setGeneratedPatterns(null);
     setCompletedColors([]);
     setProjectCompleted(false);
+    setReplacementPreview(null);
+    setReplacementHistory([]);
   }
 
   function adjustInventory(code: string, change: number) {
@@ -561,6 +621,37 @@ export default function Home() {
     flash(`MARD ${code} 已加入库存，默认 100 颗`);
   }
 
+  function applyReplacement() {
+    if (!generatedPatterns || !selectedPattern || !replacementPreview) return;
+    const nextCells = selectedPattern.map((cell, index) => {
+      if (cell?.code !== replacementPreview.fromCode) return cell;
+      if (replacementScope === "section") {
+        const row = Math.floor(index / craftSize);
+        const column = index % craftSize;
+        if (row < sectionStartRow || row >= sectionStartRow + sectionHeight || column < sectionStartColumn || column >= sectionStartColumn + sectionWidth) return cell;
+      }
+      return { code: replacementPreview.toCode, color: replacementPreview.color };
+    });
+    setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: replacementPreview.fromCode, toCode: replacementPreview.toCode }]);
+    setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
+    setHighlight(replacementPreview.toCode);
+    setReplacementPreview(null);
+    setProjectCompleted(false);
+    flash(`已将 ${replacementNeeded} 格替换为 ${replacementPreview.toCode}`);
+  }
+
+  function undoReplacement() {
+    const latest = replacementHistory[replacementHistory.length - 1];
+    if (!latest) return;
+    setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
+    setSelectedPlan(latest.plan);
+    setHighlight(latest.fromCode);
+    setReplacementPreview(null);
+    setReplacementHistory((history) => history.slice(0, -1));
+    setProjectCompleted(false);
+    flash(`已撤销 ${latest.fromCode} → ${latest.toCode}`);
+  }
+
   async function generate() {
     if (!uploadedImage) {
       flash("请先上传一张图片");
@@ -575,6 +666,8 @@ export default function Home() {
         generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory, colorShift),
       ]);
       setGeneratedPatterns({ zero, balance, quality });
+      setReplacementPreview(null);
+      setReplacementHistory([]);
       setSelectedPlan(ignoreStock ? "quality" : strategy);
       go("plans");
     } catch {
@@ -864,9 +957,9 @@ export default function Home() {
               {patternView === "chart" ? (
                 <div className="chart-stage">
                   <div className="chart-title"><div><b>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</b><span>{craftSize} × {craftSize} · 每格均标注品牌色号</span></div><em>每 5 格橙色分区</em></div>
-                  <PatternChart cells={craftPattern} size={craftSize} zoom={chartZoom} highlight={chartHighlight} />
+                  <PatternChart cells={displayPattern} size={craftSize} zoom={chartZoom} highlight={replacementPreview ? null : chartHighlight} />
                   <div className="pattern-legend" aria-label="图纸颜色用量">
-                    {craftUsage.map((item) => <button key={item.code} onClick={() => setHighlight(highlight === item.code ? null : item.code)} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.name}</span><strong>{item.count} 颗</strong></button>)}
+                    {craftUsage.map((item) => <button key={item.code} onClick={() => { setReplacementPreview(null); setHighlight(highlight === item.code ? null : item.code); }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.name}</span><strong>{item.count} 颗</strong></button>)}
                   </div>
                 </div>
               ) : patternView === "section" ? (
@@ -881,7 +974,7 @@ export default function Home() {
                     })}
                   </div>
                   <div className="section-chart-wrap">
-                    <PatternChart cells={craftPattern} size={craftSize} zoom={1.45} highlight={chartHighlight} startRow={sectionStartRow} startColumn={sectionStartColumn} rowCount={sectionHeight} columnCount={sectionWidth} />
+                    <PatternChart cells={displayPattern} size={craftSize} zoom={1.45} highlight={replacementPreview ? null : chartHighlight} startRow={sectionStartRow} startColumn={sectionStartColumn} rowCount={sectionHeight} columnCount={sectionWidth} />
                   </div>
                   <div className="section-pagination">
                     <button disabled={activeSectionRow === 0 && activeSectionColumn === 0} onClick={() => { const index = activeSectionRow * sectionColumnCount + activeSectionColumn - 1; setSectionRow(Math.floor(index / sectionColumnCount)); setSectionColumn(index % sectionColumnCount); }}>← 上一区</button>
@@ -890,7 +983,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                <div className="preview-stage"><div className="large-art">{selectedPattern ? <GeneratedArtwork cells={selectedPattern} size={gridSize} highlight={previewHighlight} /> : <BeadArtwork highlight={previewHighlight} />}</div><p>预览用于查看整体成品；制作时请切回高清施工图。</p></div>
+                <div className="preview-stage"><div className="large-art">{selectedPattern ? <GeneratedArtwork cells={displayPattern} size={gridSize} highlight={replacementPreview ? null : previewHighlight} /> : <BeadArtwork highlight={previewHighlight} />}</div><p>{replacementPreview ? `正在预览 ${replacementPreview.fromCode} → ${replacementPreview.toCode}` : "预览用于查看整体成品；制作时请切回高清施工图。"}</p></div>
               )}
               <div className="coordinate-hint">可横向、纵向滚动查看；点击右侧颜色可高亮该色号</div>
             </div>
@@ -905,9 +998,20 @@ export default function Home() {
                   { key: "A3", code: "A3", name: "鼠尾草", count: 31, color: "#91a487" },
                 ]).map((item) => {
                   const done = completedColors.includes(item.key);
-                  return <button key={item.key} className={`${highlight === item.key ? "active" : ""} ${done ? "done" : ""}`} onClick={() => setHighlight(highlight === item.key ? null : item.key)}><i style={{ background: item.color }} /><span><b>{item.code} · {item.name}</b><small>{item.count} 颗</small></span><em onClick={(event) => { event.stopPropagation(); setCompletedColors(done ? completedColors.filter((key) => key !== item.key) : [...completedColors, item.key]); }}>{done ? "✓" : "○"}</em></button>;
+                  return <button key={item.key} className={`${highlight === item.key ? "active" : ""} ${done ? "done" : ""}`} onClick={() => { setReplacementPreview(null); setHighlight(highlight === item.key ? null : item.key); }}><i style={{ background: item.color }} /><span><b>{item.code} · {item.name}</b><small>{item.count} 颗</small></span><em onClick={(event) => { event.stopPropagation(); setCompletedColors(done ? completedColors.filter((key) => key !== item.key) : [...completedColors, item.key]); }}>{done ? "✓" : "○"}</em></button>;
                 })}
               </div>
+              {generatedPatterns && highlight && highlightedUsage && <div className="color-replace-panel">
+                <div className="replace-head"><div><small>颜色不合适？</small><b>替换 {highlightedUsage.code}</b></div>{replacementHistory.length > 0 && <button onClick={undoReplacement}>↶ 撤销上次</button>}</div>
+                <div className="replace-current"><i style={{ background: highlightedUsage.color }} /><span><b>{highlightedUsage.code}</b><small>当前使用 {highlightedUsage.count} 颗</small></span></div>
+                <div className="replace-scope"><button className={replacementScope === "all" ? "active" : ""} onClick={() => { setReplacementScope("all"); setReplacementPreview(null); }}>整张图</button><button className={replacementScope === "section" ? "active" : ""} onClick={() => { setReplacementScope("section"); setReplacementPreview(null); }}>分区 {String.fromCharCode(65 + activeSectionRow)}{activeSectionColumn + 1}</button><span>替换 {replacementNeeded} 格</span></div>
+                <div className="replacement-options">
+                  {replacementOptions.map((option) => <button key={option.code} className={replacementPreview?.toCode === option.code ? "active" : ""} onClick={() => setReplacementPreview({ fromCode: highlightedUsage.code, toCode: option.code, color: option.color, label: option.label })}>
+                    <i style={{ background: option.color }} /><span><em>{option.label}</em><b>{option.code}</b><small>近似度 {option.similarity}%</small></span><strong className={option.shortage ? "short" : "enough"}>{option.shortage ? `缺 ${option.shortage}` : `库存 ${option.available}`}</strong>
+                  </button>)}
+                </div>
+                {replacementPreview && <div className="replace-confirm"><div><i style={{ background: highlightedUsage.color }} /><span>→</span><i style={{ background: replacementPreview.color }} /><b>{highlightedUsage.code} → {replacementPreview.toCode}</b></div><p>这是屏幕参考色预览，确认后会重新计算用量和缺货。</p><div><button onClick={() => setReplacementPreview(null)}>取消</button><button className="apply" onClick={applyReplacement}>确认替换 {replacementNeeded} 格</button></div></div>}
+              </div>}
               <div className="smart-tip"><span>✦</span><div><b>{ignoreStock ? "采购清单模式" : "库存提醒"}</b><p>{ignoreStock ? "缺少的颜色会完整保留，不会自动替换成库存色。" : generatedPatterns ? "这张图已经按当前安全库存重新分配颜色。" : "完成后还会剩 334 颗炭黑，安全库存充足。"}</p></div></div>
             </aside>
           </section>
