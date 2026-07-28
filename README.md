@@ -2,7 +2,7 @@
 
 豆仓是一款在浏览器本地把图片转换为拼豆图纸的工具，支持库存约束、跨品牌换色、15×15 至 116×116 画布、可缩放图纸总览、分区施工图和采购清单。
 
-公开测试地址：<https://doucang-bead-pantry.diresand.chatgpt.site>
+公开测试地址：<https://mag1cal233.github.io/doucang-bead-pantry/>
 
 ## 当前图纸能力
 
