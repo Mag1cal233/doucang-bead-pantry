@@ -1,7 +1,17 @@
 import type { NextConfig } from "next";
 
+const repositoryName = process.env.GITHUB_REPOSITORY?.split("/")[1] ?? "doucang-bead-pantry";
+const pagesBasePath = process.env.GITHUB_PAGES === "true" ? `/${repositoryName}` : "";
+
 const nextConfig: NextConfig = {
-  /* config options here */
+  output: "export",
+  trailingSlash: true,
+  images: { unoptimized: true },
+  basePath: pagesBasePath || undefined,
+  assetPrefix: pagesBasePath || undefined,
+  typescript: {
+    ignoreBuildErrors: process.env.GITHUB_PAGES === "true",
+  },
 };
 
 export default nextConfig;
