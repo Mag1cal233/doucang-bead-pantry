@@ -7,6 +7,7 @@ type Strategy = "zero" | "balance" | "quality";
 type GeneratedCell = { code: string; color: string } | null;
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
 type PatternView = "chart" | "section" | "preview";
+type ColorShift = "original" | "warm" | "cool" | "bright" | "soft";
 type UsageItem = { code: string; color: string; count: number; name: string };
 type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
 
@@ -317,7 +318,19 @@ function perceptualDistance(a: { r: number; g: number; b: number }, b: { r: numb
   return (2 + meanRed / 256) * red * red + 4 * green * green + (2 + (255 - meanRed) / 256) * blue * blue;
 }
 
-async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[]): Promise<GeneratedCell[]> {
+function applyColorShift(pixel: { r: number; g: number; b: number }, shift: ColorShift) {
+  const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+  if (shift === "warm") return { r: clamp(pixel.r * 1.06 + 8), g: clamp(pixel.g * 1.01 + 2), b: clamp(pixel.b * .92) };
+  if (shift === "cool") return { r: clamp(pixel.r * .94), g: clamp(pixel.g * 1.01 + 2), b: clamp(pixel.b * 1.07 + 8) };
+  if (shift === "bright") return { r: clamp(pixel.r * 1.08 + 10), g: clamp(pixel.g * 1.08 + 10), b: clamp(pixel.b * 1.08 + 10) };
+  if (shift === "soft") {
+    const light = (pixel.r + pixel.g + pixel.b) / 3;
+    return { r: clamp(pixel.r * .78 + light * .22 + 5), g: clamp(pixel.g * .78 + light * .22 + 5), b: clamp(pixel.b * .78 + light * .22 + 5) };
+  }
+  return pixel;
+}
+
+async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], colorShift: ColorShift): Promise<GeneratedCell[]> {
   const image = new Image();
   image.src = imageUrl;
   await image.decode();
@@ -347,7 +360,7 @@ async function generatePattern(imageUrl: string, size: number, strategy: Strateg
 
   const pixels = Array.from({ length: size * size }, (_, index) => {
     const offset = index * 4;
-    return data[offset + 3] < 32 ? null : { r: data[offset], g: data[offset + 1], b: data[offset + 2] };
+    return data[offset + 3] < 32 ? null : applyColorShift({ r: data[offset], g: data[offset + 1], b: data[offset + 2] }, colorShift);
   });
   const candidates = pixels.map((pixel) => pixel
     ? palette
@@ -399,6 +412,7 @@ export default function Home() {
   const [inventory, setInventory] = useState<Swatch[]>(swatches);
   const [inventoryReady, setInventoryReady] = useState(false);
   const [projectCompleted, setProjectCompleted] = useState(false);
+  const [colorShift, setColorShift] = useState<ColorShift>("original");
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
@@ -525,9 +539,9 @@ export default function Home() {
     setIsGenerating(true);
     try {
       const [zero, balance, quality] = await Promise.all([
-        generatePattern(uploadedImage, gridSize, "zero", ignoreStock, inventory),
-        generatePattern(uploadedImage, gridSize, "balance", ignoreStock, inventory),
-        generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory),
+        generatePattern(uploadedImage, gridSize, "zero", ignoreStock, inventory, colorShift),
+        generatePattern(uploadedImage, gridSize, "balance", ignoreStock, inventory, colorShift),
+        generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory, colorShift),
       ]);
       setGeneratedPatterns({ zero, balance, quality });
       setSelectedPlan(ignoreStock ? "quality" : strategy);
@@ -747,6 +761,19 @@ export default function Home() {
                 {[{id:"zero",title:"零补货",desc:"完全使用现有库存"},{id:"balance",title:"平衡方案",desc:"允许少量补货"},{id:"quality",title:"效果优先",desc:"保留最多细节"}].map((item) => <button key={item.id} className={strategy === item.id ? "selected" : ""} onClick={() => setStrategy(item.id as Strategy)}><i /><b>{item.title}</b><small>{item.desc}</small></button>)}
               </div></div>
               <div className="setting-row"><div><label>最大颜色数</label><p>减少零散色块，更容易制作</p></div><select aria-label="最大颜色数" defaultValue="12"><option>8 种</option><option>12 种</option><option>16 种</option></select></div>
+              <div className="setting-block color-shift-setting">
+                <label>色彩偏转 <span>{({ original: "保持原图", warm: "偏暖修正", cool: "偏冷修正", bright: "提亮修正", soft: "柔和修正" } as Record<ColorShift, string>)[colorShift]}</span></label>
+                <p>当屏幕颜色与豆子效果不协调时，先调整整体色调，再重新匹配库存色号。</p>
+                <div className="color-shift-grid">
+                  {([
+                    { id: "original", title: "原图", color: "linear-gradient(135deg,#d8a36f,#718fa0)" },
+                    { id: "warm", title: "偏暖", color: "linear-gradient(135deg,#f2b46d,#d86f5b)" },
+                    { id: "cool", title: "偏冷", color: "linear-gradient(135deg,#72b9c3,#6f78b5)" },
+                    { id: "bright", title: "提亮", color: "linear-gradient(135deg,#fff1ad,#b9dce8)" },
+                    { id: "soft", title: "柔和", color: "linear-gradient(135deg,#d8c9b7,#9bb3aa)" },
+                  ] as { id: ColorShift; title: string; color: string }[]).map((item) => <button key={item.id} className={colorShift === item.id ? "active" : ""} onClick={() => setColorShift(item.id)}><i style={{ background: item.color }} /><b>{item.title}</b></button>)}
+                </div>
+              </div>
               <div className="setting-row"><div><label>主体优化</label><p>强化五官与外轮廓</p></div><button className="toggle on" aria-label="开启主体优化"><i /></button></div>
               <div className="setting-row"><div><label>保留安全库存</label><p>不消耗常用色的保留颗数</p></div><button className="toggle on" aria-label="开启保留安全库存"><i /></button></div>
               <button className={`ignore-stock-option ${ignoreStock ? "active" : ""}`} onClick={() => setIgnoreStock(!ignoreStock)} aria-pressed={ignoreStock}>
@@ -764,6 +791,7 @@ export default function Home() {
       {screen === "plans" && (
         <div className="page plans-page">
           <section className="plans-heading"><div><span className="step-tag">02 · 选择方案</span><h1>同一张图，三种完成方式</h1><p>先看效果，也看清需要多少豆。</p></div><button className="secondary" onClick={() => go("create")}>← 调整设置</button></section>
+          {colorShift !== "original" && <div className="color-shift-banner"><span>◐</span><div><b>已应用{({ warm: "偏暖", cool: "偏冷", bright: "提亮", soft: "柔和", original: "原图" } as Record<ColorShift, string>)[colorShift]}偏转</b><small>三套方案都基于修正后的色调匹配；如仍不合适，可返回切换其他方向。</small></div><button onClick={() => go("create")}>更换偏转</button></div>}
           {ignoreStock && <div className="ignore-stock-banner"><span>∞</span><div><b>已无视当前库存</b><small>下列方案按完整品牌色库生成；缺少的颜色不会被替换，并会加入采购清单。</small></div><button onClick={() => { setIgnoreStock(false); go("create"); }}>恢复库存约束</button></div>}
           <section className="plan-grid">
             {plans.map((plan) => (
