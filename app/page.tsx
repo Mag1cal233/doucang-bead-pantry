@@ -6,7 +6,7 @@ type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
 type Strategy = "zero" | "balance" | "quality";
 type GeneratedCell = { code: string; color: string } | null;
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
-type PatternView = "chart" | "preview";
+type PatternView = "chart" | "section" | "preview";
 type UsageItem = { code: string; color: string; count: number; name: string };
 
 const swatches = [
@@ -167,34 +167,41 @@ function textColor(background: string) {
   return (r * 299 + g * 587 + b * 114) / 1000 > 154 ? "#27251f" : "#ffffff";
 }
 
-function PatternChart({ cells, size, zoom, highlight }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null }) {
+function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn = 0, rowCount = size, columnCount = size }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null; startRow?: number; startColumn?: number; rowCount?: number; columnCount?: number }) {
   const cellSize = Math.round(30 * zoom);
   return (
-    <div className="chart-scroll" aria-label={`${size}乘${size}高清带色号施工图`}>
+    <div className="chart-scroll" aria-label={`${rowCount}乘${columnCount}高清带色号施工图`}>
       <div className="pattern-chart" style={{ "--chart-cell": `${cellSize}px` } as CSSProperties}>
         <div className="chart-row chart-axis-row">
           <span className="chart-corner">×</span>
-          {Array.from({ length: size }, (_, column) => <span className={`chart-axis ${((column + 1) % 5 === 0) ? "major-x" : ""}`} key={column}>{column + 1}</span>)}
+          {Array.from({ length: columnCount }, (_, column) => {
+            const absoluteColumn = startColumn + column + 1;
+            return <span className={`chart-axis ${(absoluteColumn % 5 === 0) ? "major-x" : ""}`} key={column}>{absoluteColumn}</span>;
+          })}
         </div>
-        {Array.from({ length: size }, (_, row) => (
+        {Array.from({ length: rowCount }, (_, row) => {
+          const absoluteRow = startRow + row + 1;
+          return (
           <div className="chart-row" key={row}>
-            <span className={`chart-axis chart-row-axis ${((row + 1) % 5 === 0) ? "major-y" : ""}`}>{row + 1}</span>
-            {Array.from({ length: size }, (_, column) => {
-              const cell = cells[row * size + column];
+            <span className={`chart-axis chart-row-axis ${(absoluteRow % 5 === 0) ? "major-y" : ""}`}>{absoluteRow}</span>
+            {Array.from({ length: columnCount }, (_, column) => {
+              const absoluteColumn = startColumn + column + 1;
+              const cell = cells[(absoluteRow - 1) * size + absoluteColumn - 1];
               const dimmed = Boolean(cell && highlight && cell.code !== highlight);
               return (
                 <span
-                  className={`chart-cell ${((column + 1) % 5 === 0) ? "major-x" : ""} ${((row + 1) % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""}`}
+                  className={`chart-cell ${(absoluteColumn % 5 === 0) ? "major-x" : ""} ${(absoluteRow % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""}`}
                   key={column}
                   style={cell ? { background: cell.color, color: textColor(cell.color) } : undefined}
-                  title={cell ? `${row + 1} 行 ${column + 1} 列 · ${cell.code}` : `${row + 1} 行 ${column + 1} 列 · 留空`}
+                  title={cell ? `${absoluteRow} 行 ${absoluteColumn} 列 · ${cell.code}` : `${absoluteRow} 行 ${absoluteColumn} 列 · 留空`}
                 >
                   {cell?.code}
                 </span>
               );
             })}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -386,6 +393,8 @@ export default function Home() {
   const [patternView, setPatternView] = useState<PatternView>("chart");
   const [chartZoom, setChartZoom] = useState(1);
   const [chartFocus, setChartFocus] = useState(false);
+  const [sectionRow, setSectionRow] = useState(0);
+  const [sectionColumn, setSectionColumn] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -410,6 +419,14 @@ export default function Home() {
   const craftUsage = generatedUsage.length ? generatedUsage : fallbackUsage;
   const chartHighlight = selectedPattern ? highlight : (highlight ? fallbackCodes[highlight]?.code ?? highlight : null);
   const previewHighlight = selectedPattern ? highlight : (highlight ? Object.entries(fallbackCodes).find(([, item]) => item.code === highlight)?.[0] ?? highlight : null);
+  const sectionRowCount = Math.ceil(craftSize / 10);
+  const sectionColumnCount = Math.ceil(craftSize / 10);
+  const activeSectionRow = Math.min(sectionRow, sectionRowCount - 1);
+  const activeSectionColumn = Math.min(sectionColumn, sectionColumnCount - 1);
+  const sectionStartRow = activeSectionRow * 10;
+  const sectionStartColumn = activeSectionColumn * 10;
+  const sectionHeight = Math.min(10, craftSize - sectionStartRow);
+  const sectionWidth = Math.min(10, craftSize - sectionStartColumn);
 
   function go(next: Screen) {
     setScreen(next);
@@ -693,7 +710,7 @@ export default function Home() {
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
               <div className="canvas-toolbar">
-                <div className="view-switch"><button className={patternView === "chart" ? "active" : ""} onClick={() => setPatternView("chart")}>高清施工图</button><button className={patternView === "preview" ? "active" : ""} onClick={() => setPatternView("preview")}>成品预览</button></div>
+                <div className="view-switch"><button className={patternView === "chart" ? "active" : ""} onClick={() => setPatternView("chart")}>完整图纸</button><button className={patternView === "section" ? "active" : ""} onClick={() => setPatternView("section")}>10×10 分区拼</button><button className={patternView === "preview" ? "active" : ""} onClick={() => setPatternView("preview")}>成品预览</button></div>
                 <div className="chart-tools">
                   {patternView === "chart" && <><button aria-label="缩小图纸" onClick={() => setChartZoom(Math.max(.6, chartZoom - .2))}>−</button><strong>{Math.round(chartZoom * 100)}%</strong><button aria-label="放大图纸" onClick={() => setChartZoom(Math.min(2, chartZoom + .2))}>＋</button></>}
                   <button onClick={() => setChartFocus(!chartFocus)}>{chartFocus ? "退出全屏" : "专注查看"}</button>
@@ -705,6 +722,26 @@ export default function Home() {
                   <PatternChart cells={craftPattern} size={craftSize} zoom={chartZoom} highlight={chartHighlight} />
                   <div className="pattern-legend" aria-label="图纸颜色用量">
                     {craftUsage.map((item) => <button key={item.code} onClick={() => setHighlight(highlight === item.code ? null : item.code)} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.name}</span><strong>{item.count} 颗</strong></button>)}
+                  </div>
+                </div>
+              ) : patternView === "section" ? (
+                <div className="chart-stage section-stage">
+                  <div className="chart-title"><div><b>分区 {String.fromCharCode(65 + activeSectionRow)}{activeSectionColumn + 1}</b><span>第 {sectionStartRow + 1}–{sectionStartRow + sectionHeight} 行 · 第 {sectionStartColumn + 1}–{sectionStartColumn + sectionWidth} 列</span></div><em>放大逐块拼，不易串行</em></div>
+                  <div className="section-navigator" aria-label="选择图纸分区">
+                    {Array.from({ length: sectionRowCount * sectionColumnCount }, (_, index) => {
+                      const row = Math.floor(index / sectionColumnCount);
+                      const column = index % sectionColumnCount;
+                      const label = `${String.fromCharCode(65 + row)}${column + 1}`;
+                      return <button key={label} className={row === activeSectionRow && column === activeSectionColumn ? "active" : ""} onClick={() => { setSectionRow(row); setSectionColumn(column); }}>{label}<small>{row * 10 + 1}–{Math.min((row + 1) * 10, craftSize)} 行</small></button>;
+                    })}
+                  </div>
+                  <div className="section-chart-wrap">
+                    <PatternChart cells={craftPattern} size={craftSize} zoom={1.45} highlight={chartHighlight} startRow={sectionStartRow} startColumn={sectionStartColumn} rowCount={sectionHeight} columnCount={sectionWidth} />
+                  </div>
+                  <div className="section-pagination">
+                    <button disabled={activeSectionRow === 0 && activeSectionColumn === 0} onClick={() => { const index = activeSectionRow * sectionColumnCount + activeSectionColumn - 1; setSectionRow(Math.floor(index / sectionColumnCount)); setSectionColumn(index % sectionColumnCount); }}>← 上一区</button>
+                    <span>{activeSectionRow * sectionColumnCount + activeSectionColumn + 1} / {sectionRowCount * sectionColumnCount}</span>
+                    <button disabled={activeSectionRow === sectionRowCount - 1 && activeSectionColumn === sectionColumnCount - 1} onClick={() => { const index = activeSectionRow * sectionColumnCount + activeSectionColumn + 1; setSectionRow(Math.floor(index / sectionColumnCount)); setSectionColumn(index % sectionColumnCount); }}>下一区 →</button>
                   </div>
                 </div>
               ) : (

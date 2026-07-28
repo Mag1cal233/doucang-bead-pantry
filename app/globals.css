@@ -354,6 +354,19 @@ button { color: inherit; }
 .pattern-legend b { font-family: Arial, sans-serif; font-size: 12px; }
 .pattern-legend span { font-size: 9px; opacity: .85; }
 .pattern-legend strong { grid-column: 1 / -1; font-size: 9px; }
+.section-stage { min-height: 590px; }
+.section-navigator { display: flex; gap: 7px; overflow-x: auto; padding: 2px 1px 12px; scrollbar-width: thin; }
+.section-navigator button { flex: 0 0 72px; min-height: 48px; border: 1px solid #d6d2c7; border-radius: 10px; background: #fffefa; color: var(--ink); cursor: pointer; font-family: Arial, sans-serif; font-size: 12px; font-weight: 800; }
+.section-navigator button small { display: block; margin-top: 3px; color: var(--muted); font-family: "Microsoft YaHei", sans-serif; font-size: 7px; font-weight: 400; }
+.section-navigator button.active { border-color: var(--sage); background: var(--sage); color: white; box-shadow: 0 5px 14px rgba(68,91,73,.18); }
+.section-navigator button.active small { color: rgba(255,255,255,.75); }
+.section-chart-wrap { display: grid; place-items: center; min-height: 470px; padding: 18px; border-radius: 15px; background: #e6e2d8; }
+.section-chart-wrap .chart-scroll { width: auto; max-width: 100%; max-height: none; }
+.section-pagination { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin-top: 12px; }
+.section-pagination button { min-height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--white); cursor: pointer; font-size: 10px; font-weight: 700; }
+.section-pagination button:last-child { justify-self: stretch; }
+.section-pagination button:disabled { opacity: .35; cursor: not-allowed; }
+.section-pagination span { color: var(--muted); font-family: Arial, sans-serif; font-size: 10px; }
 .preview-stage { padding: 1px 0 18px; }
 .preview-stage > p { margin: 0; text-align: center; color: var(--muted); font-size: 10px; }
 .large-art { width: min(520px, 75%); margin: 36px auto 12px; padding: 22px; background: #e4e2d9; border-radius: 20px; }
@@ -482,6 +495,9 @@ button { color: inherit; }
   .chart-scroll { max-height: 480px; }
   .craft-canvas.chart-focus .chart-scroll { max-height: calc(100vh - 265px); }
   .pattern-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .section-stage { min-height: 530px; }
+  .section-chart-wrap { min-height: 410px; padding: 9px; }
+  .section-chart-wrap .chart-scroll { max-width: 100%; }
   .mobile-nav { position: fixed; display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; left: 10px; right: 10px; bottom: 10px; height: 64px; padding: 6px; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,254,250,.94); backdrop-filter: blur(16px); box-shadow: 0 12px 35px rgba(48,46,41,.18); z-index: 30; }
   .mobile-nav button { border: 0; background: transparent; color: #8b867d; font-size: 9px; display: grid; place-items: center; gap: 2px; cursor: pointer; }
   .mobile-nav button span { font-size: 17px; }
