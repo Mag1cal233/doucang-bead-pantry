@@ -1,4 +1,16 @@
-# vinext-starter
+# 豆仓公开测试版
+
+豆仓是一款在浏览器本地把图片转换为拼豆图纸的工具，支持库存约束、跨品牌换色、15×15 至 116×116 画布、可缩放图纸总览、分区施工图和采购清单。
+
+公开测试地址：<https://doucang-bead-pantry.diresand.chatgpt.site>
+
+## 当前图纸能力
+
+- 图纸总览支持 50%–300% 缩放与适合窗口
+- 颜色数量上限可选 4、6、8、10、12、16、20、24、32、48、64 色
+- 高清色号施工图、10×10 分区拼、高清 PNG 和 A4 分页打印
+
+## 技术基础
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
