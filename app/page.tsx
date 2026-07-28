@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, CSSProperties, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 
 type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
 type Strategy = "zero" | "balance" | "quality";
@@ -8,16 +8,17 @@ type GeneratedCell = { code: string; color: string } | null;
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
 type PatternView = "chart" | "section" | "preview";
 type UsageItem = { code: string; color: string; count: number; name: string };
+type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
 
-const swatches = [
-  { code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
-  { code: "M4", name: "暖杏", color: "#efb77d", count: 246, safe: 40 },
-  { code: "M7", name: "蜜桃粉", color: "#e98d8c", count: 184, safe: 30 },
-  { code: "C5", name: "姜黄色", color: "#d89b42", count: 512, safe: 80 },
-  { code: "C9", name: "榛果棕", color: "#8b5e45", count: 127, safe: 30 },
-  { code: "A3", name: "鼠尾草", color: "#91a487", count: 298, safe: 60 },
-  { code: "A8", name: "湖水蓝", color: "#69aeb1", count: 96, safe: 25 },
-  { code: "N2", name: "炭黑", color: "#35302e", count: 431, safe: 100 },
+const swatches: Swatch[] = [
+  { brand: "MARD", code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
+  { brand: "MARD", code: "M4", name: "暖杏", color: "#efb77d", count: 246, safe: 40 },
+  { brand: "MARD", code: "M7", name: "蜜桃粉", color: "#e98d8c", count: 184, safe: 30 },
+  { brand: "MARD", code: "C5", name: "姜黄色", color: "#d89b42", count: 512, safe: 80 },
+  { brand: "MARD", code: "C9", name: "榛果棕", color: "#8b5e45", count: 127, safe: 30 },
+  { brand: "MARD", code: "A3", name: "鼠尾草", color: "#91a487", count: 298, safe: 60 },
+  { brand: "MARD", code: "A8", name: "湖水蓝", color: "#69aeb1", count: 96, safe: 25 },
+  { brand: "MARD", code: "N2", name: "炭黑", color: "#35302e", count: 431, safe: 100 },
 ];
 
 const brandCatalog = [
@@ -316,7 +317,7 @@ function perceptualDistance(a: { r: number; g: number; b: number }, b: { r: numb
   return (2 + meanRed / 256) * red * red + 4 * green * green + (2 + (255 - meanRed) / 256) * blue * blue;
 }
 
-async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean): Promise<GeneratedCell[]> {
+async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[]): Promise<GeneratedCell[]> {
   const image = new Image();
   image.src = imageUrl;
   await image.decode();
@@ -336,7 +337,7 @@ async function generatePattern(imageUrl: string, size: number, strategy: Strateg
   context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
 
   const data = context.getImageData(0, 0, size, size).data;
-  const stockColors = swatches.map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
+  const stockColors = inventory.map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
   const fullColors = catalogColors.map(([code, color]) => ({ code, color, name: "完整色库", count: 0, safe: 0, limit: Infinity }));
   const palette = strategy === "quality"
     ? fullColors
@@ -395,11 +396,35 @@ export default function Home() {
   const [chartFocus, setChartFocus] = useState(false);
   const [sectionRow, setSectionRow] = useState(0);
   const [sectionColumn, setSectionColumn] = useState(0);
+  const [inventory, setInventory] = useState<Swatch[]>(swatches);
+  const [inventoryReady, setInventoryReady] = useState(false);
+  const [projectCompleted, setProjectCompleted] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const inventoryFileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("doucang-inventory-v1");
+      if (saved) {
+        const parsed = JSON.parse(saved) as Swatch[];
+        if (Array.isArray(parsed) && parsed.length) setInventory(parsed);
+      }
+    } catch {
+      // Keep the safe starter inventory when local data cannot be read.
+    } finally {
+      setInventoryReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!inventoryReady) return;
+    window.localStorage.setItem("doucang-inventory-v1", JSON.stringify(inventory));
+  }, [inventory, inventoryReady]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
-  const totalStock = useMemo(() => swatches.reduce((sum, item) => sum + item.count, 0), []);
+  const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
+  const lowStockCount = useMemo(() => inventory.filter((item) => item.count < item.safe * 4).length, [inventory]);
   const progress = Math.round((completedColors.length / 5) * 100);
   const selectedPattern = generatedPatterns?.[selectedPlan] ?? null;
   const generatedUsage = useMemo(() => {
@@ -408,11 +433,11 @@ export default function Home() {
     selectedPattern.forEach((cell) => {
       if (!cell) return;
       const current = usage.get(cell.code);
-      const stockColor = swatches.find((item) => item.code === cell.code);
+      const stockColor = inventory.find((item) => item.code === cell.code);
       usage.set(cell.code, { code: cell.code, color: cell.color, count: (current?.count ?? 0) + 1, name: stockColor?.name ?? "色卡色" });
     });
     return [...usage.values()].sort((a, b) => b.count - a.count);
-  }, [selectedPattern]);
+  }, [selectedPattern, inventory]);
   const actualProgress = generatedUsage.length ? Math.round((completedColors.length / generatedUsage.length) * 100) : progress;
   const craftPattern = selectedPattern ?? fallbackPattern;
   const craftSize = selectedPattern ? gridSize : 15;
@@ -440,6 +465,55 @@ export default function Home() {
     setUploadedImage(url);
     setGeneratedPatterns(null);
     setCompletedColors([]);
+    setProjectCompleted(false);
+  }
+
+  function adjustInventory(code: string, change: number) {
+    setInventory((items) => items.map((item) => item.code === code ? { ...item, count: Math.max(0, item.count + change) } : item));
+  }
+
+  function exportInventory() {
+    const header = "品牌,色号,颜色名称,HEX,数量,安全库存";
+    const rows = inventory.map((item) => [item.brand, item.code, item.name, item.color, item.count, item.safe].join(","));
+    const blob = new Blob([`\uFEFF${[header, ...rows].join("\r\n")}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "豆仓库存.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+    flash("库存表已导出");
+  }
+
+  async function importInventory(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = (await file.text()).replace(/^\uFEFF/, "");
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      const imported = lines.slice(1).map((line) => {
+        const [brand, code, name, color, count, safe] = line.split(",").map((value) => value.trim());
+        return { brand: brand || "MARD", code, name: name || code, color, count: Number(count), safe: Number(safe) } as Swatch;
+      }).filter((item) => item.code && /^#[0-9a-f]{6}$/i.test(item.color) && Number.isFinite(item.count) && Number.isFinite(item.safe));
+      if (!imported.length) throw new Error("empty");
+      setInventory(imported.map((item) => ({ ...item, count: Math.max(0, Math.round(item.count)), safe: Math.max(0, Math.round(item.safe)) })));
+      setGeneratedPatterns(null);
+      flash(`已导入 ${imported.length} 个库存色号`);
+    } catch {
+      flash("导入失败，请使用豆仓导出的 CSV 格式");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function finishProject() {
+    if (projectCompleted) return;
+    if (!ignoreStock) {
+      const used = new Map(craftUsage.map((item) => [item.code, item.count]));
+      setInventory((items) => items.map((item) => ({ ...item, count: Math.max(0, item.count - (used.get(item.code) ?? 0)) })));
+    }
+    setProjectCompleted(true);
+    flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${craftPattern.filter(Boolean).length} 颗`);
   }
 
   async function generate() {
@@ -451,9 +525,9 @@ export default function Home() {
     setIsGenerating(true);
     try {
       const [zero, balance, quality] = await Promise.all([
-        generatePattern(uploadedImage, gridSize, "zero", ignoreStock),
-        generatePattern(uploadedImage, gridSize, "balance", ignoreStock),
-        generatePattern(uploadedImage, gridSize, "quality", ignoreStock),
+        generatePattern(uploadedImage, gridSize, "zero", ignoreStock, inventory),
+        generatePattern(uploadedImage, gridSize, "balance", ignoreStock, inventory),
+        generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory),
       ]);
       setGeneratedPatterns({ zero, balance, quality });
       setSelectedPlan(ignoreStock ? "quality" : strategy);
@@ -521,7 +595,7 @@ export default function Home() {
             <article className="panel inventory-summary">
               <div className="panel-head"><div><small>我的豆仓</small><h2>8 种颜色状态良好</h2></div><button onClick={() => go("inventory")}>管理库存 →</button></div>
               <div className="swatch-stack">
-                {swatches.slice(0, 7).map((item) => <i key={item.code} style={{ background: item.color }} title={item.name} />)}
+                {inventory.slice(0, 7).map((item) => <i key={item.code} style={{ background: item.color }} title={item.name} />)}
                 <i className="more">+1</i>
               </div>
               <div className="inventory-stats">
@@ -542,26 +616,27 @@ export default function Home() {
         <div className="page inventory-page">
           <section className="page-title">
             <div><span className="eyebrow">MY BEAD PANTRY</span><h1>我的豆仓</h1><p>让库存保持准确，生成的每张图才真正拼得出来。</p></div>
-            <div className="title-actions"><button className="secondary" onClick={() => flash("库存表模板已准备")}>导入表格</button><button className="primary" onClick={() => flash("已打开添加色号入口")}>＋ 添加色号</button></div>
+            <div className="title-actions"><input ref={inventoryFileRef} type="file" accept=".csv,text/csv" hidden onChange={importInventory} /><button className="secondary" onClick={() => inventoryFileRef.current?.click()}>导入 CSV</button><button className="secondary" onClick={exportInventory}>导出库存</button><button className="primary" onClick={() => flash("可先导出 CSV，补充色号后再导入")}>＋ 添加色号</button></div>
           </section>
+          <div className="local-save-note"><span>✓</span><div><b>游客模式 · 已保存在本机</b><small>库存只保存在当前设备；可随时导出 CSV 备份或迁移。</small></div></div>
           <section className="inventory-overview">
             <div><span>库存总量</span><strong>{totalStock.toLocaleString()}<small> 颗</small></strong><em>较上次作品 -215</em></div>
             <div><span>已录入色号</span><strong>8<small> 种</small></strong><em>覆盖常用色 72%</em></div>
-            <div><span>低于安全线</span><strong>2<small> 种</small></strong><em className="warning">需要留意</em></div>
+            <div><span>低于安全线</span><strong>{lowStockCount}<small> 种</small></strong><em className="warning">需要留意</em></div>
             <div><span>可直接完成</span><strong>5<small> 张</small></strong><em>来自灵感夹</em></div>
           </section>
           <section className="panel inventory-table-wrap">
             <div className="table-toolbar"><div><button className="chip active">全部 8</button><button className="chip">库存偏低 2</button><button className="chip">优先消耗 1</button></div><label className="search">⌕ <input aria-label="搜索色号" placeholder="搜索色号或颜色" /></label></div>
             <div className="inventory-table">
               <div className="table-row table-header"><span>颜色</span><span>色号</span><span>库存状态</span><span>现有数量</span><span>安全库存</span><span>操作</span></div>
-              {swatches.map((item, index) => {
+              {inventory.map((item, index) => {
                 const low = item.count < item.safe * 4;
                 return (
                   <div className="table-row" key={item.code}>
                     <span className="color-name"><i style={{ background: item.color }} />{item.name}</span>
-                    <span><b>{item.code}</b><small>MARD</small></span>
+                    <span><b>{item.code}</b><small>{item.brand}</small></span>
                     <span><em className={low ? "status low" : "status good"}>{low ? "建议补充" : index === 3 ? "优先消耗" : "充足"}</em></span>
-                    <span className="count-control"><button aria-label={`减少${item.name}`}>−</button><b>{item.count}</b><button aria-label={`增加${item.name}`}>＋</button></span>
+                    <span className="count-control"><button aria-label={`减少${item.name}`} onClick={() => adjustInventory(item.code, -10)}>−</button><b>{item.count}</b><button aria-label={`增加${item.name}`} onClick={() => adjustInventory(item.code, 10)}>＋</button></span>
                     <span>{item.safe} 颗</span>
                     <span><button className="text-button" onClick={() => flash(`${item.code} 已设为生成偏好`)}>设置偏好</button></span>
                   </div>
@@ -695,7 +770,7 @@ export default function Home() {
           </section>
           <section className="plan-footer panel">
             <div><span>已选择</span><h3>{currentPlan.title}</h3><p>{currentPlan.note}</p></div>
-            <div className="usage-preview">{swatches.slice(0, 5).map((item) => <i key={item.code} style={{ background: item.color }} />)}<span>共 {currentPlan.colors} 色</span></div>
+            <div className="usage-preview">{inventory.slice(0, 5).map((item) => <i key={item.code} style={{ background: item.color }} />)}<span>共 {currentPlan.colors} 色</span></div>
             <button className="primary" onClick={() => go("craft")}>使用这套图纸 <span>→</span></button>
           </section>
         </div>
@@ -705,7 +780,7 @@ export default function Home() {
         <div className="page craft-page">
           <section className="craft-top">
             <div><span className="step-tag">03 · 制作模式</span><h1>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}</p></div>
-            <div className="craft-actions"><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" onClick={() => flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${selectedPattern?.filter(Boolean).length ?? 225} 颗`)}>完成{ignoreStock ? "作品" : "并扣库存"}</button></div>
+            <div className="craft-actions"><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>

@@ -57,6 +57,7 @@ button { color: inherit; }
 .primary, .secondary { border-radius: 13px; min-height: 46px; padding: 0 20px; font-weight: 750; cursor: pointer; transition: .18s ease; }
 .primary { border: 1px solid var(--sage); background: var(--sage); color: white; box-shadow: 0 9px 20px rgba(68,91,73,.18); }
 .primary:hover { background: var(--sage-dark); transform: translateY(-1px); }
+.primary:disabled { opacity: .58; cursor: default; transform: none; box-shadow: none; }
 .secondary { border: 1px solid var(--line); background: rgba(255,255,255,.65); }
 .secondary:hover { border-color: #bdb7aa; background: white; }
 .primary span { margin-left: 20px; }
@@ -123,6 +124,11 @@ button { color: inherit; }
 .page-title p, .create-heading p, .plans-heading p, .craft-top p { margin: 0; color: var(--muted); line-height: 1.7; }
 .title-actions, .craft-actions { display: flex; gap: 10px; }
 .inventory-overview { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+.local-save-note { min-height: 58px; margin: -8px 0 18px; padding: 10px 15px; display: flex; align-items: center; gap: 11px; border: 1px solid #d8e0d5; border-radius: 14px; background: #edf2ea; color: var(--sage-dark); }
+.local-save-note > span { width: 29px; height: 29px; display: grid; place-content: center; border-radius: 50%; background: var(--sage); color: white; font-size: 12px; }
+.local-save-note b, .local-save-note small { display: block; }
+.local-save-note b { font-size: 10px; }
+.local-save-note small { margin-top: 3px; color: #788375; font-size: 8px; }
 .inventory-overview > div { background: #ebe7dc; padding: 24px; border-radius: 18px; }
 .inventory-overview span, .inventory-overview em { display: block; font-size: 11px; color: var(--muted); font-style: normal; }
 .inventory-overview strong { font-family: Georgia, serif; font-size: 35px; display: block; margin: 14px 0 7px; }
