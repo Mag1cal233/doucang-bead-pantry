@@ -258,6 +258,15 @@ button { color: inherit; }
 .toggle i { display: block; width: 18px; height: 18px; background: white; border-radius: 50%; transition: .2s; }
 .toggle.on { background: var(--sage); }
 .toggle.on i { transform: translateX(19px); }
+.ignore-stock-option { width: 100%; min-height: 68px; margin: 2px 0 14px; padding: 11px 13px; display: grid; grid-template-columns: 39px 1fr auto; gap: 12px; align-items: center; text-align: left; border: 1px solid var(--line); border-radius: 14px; background: #f6f4ed; cursor: pointer; }
+.ignore-stock-option:hover { border-color: #aaa493; }
+.ignore-stock-option.active { border-color: #b97855; background: #f6e8df; box-shadow: inset 0 0 0 1px rgba(185,120,85,.12); }
+.ignore-stock-option .infinity-mark { width: 39px; height: 39px; display: grid; place-content: center; border-radius: 11px; background: #e8e4da; color: var(--sage-dark); font-family: Georgia, serif; font-size: 25px; }
+.ignore-stock-option.active .infinity-mark { background: #c67e5c; color: white; }
+.ignore-stock-option b, .ignore-stock-option small { display: block; }
+.ignore-stock-option b { font-size: 12px; }
+.ignore-stock-option small { color: var(--muted); font-size: 9px; margin-top: 4px; line-height: 1.45; }
+.ignore-stock-option .toggle { display: block; pointer-events: none; }
 .generate-button { width: 100%; height: 54px; border: 0; border-radius: 14px; background: var(--sage); color: white; font-weight: 800; cursor: pointer; margin-top: 5px; box-shadow: 0 10px 25px rgba(68,91,73,.2); }
 .generate-button:disabled { opacity: .8; }
 .generate-button span { float: right; margin-right: 5px; }
@@ -267,6 +276,12 @@ button { color: inherit; }
 
 .plans-heading { align-items: center; }
 .plans-heading h1 { margin-top: 11px; }
+.ignore-stock-banner { min-height: 68px; margin: -17px 0 18px; padding: 12px 17px; display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; align-items: center; border: 1px solid #e0c4b3; border-radius: 15px; background: #f6e8df; }
+.ignore-stock-banner > span { width: 38px; height: 38px; border-radius: 11px; display: grid; place-content: center; background: #c67e5c; color: white; font-family: Georgia, serif; font-size: 24px; }
+.ignore-stock-banner b, .ignore-stock-banner small { display: block; }
+.ignore-stock-banner b { font-size: 11px; }
+.ignore-stock-banner small { color: #856f61; font-size: 9px; margin-top: 4px; }
+.ignore-stock-banner button { border: 0; background: transparent; color: #9a5f42; font-size: 9px; font-weight: 700; cursor: pointer; }
 .plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .plan-card { background: var(--white); border: 1.5px solid var(--line); border-radius: 24px; overflow: hidden; cursor: pointer; transition: .2s; position: relative; }
 .plan-card:hover { transform: translateY(-3px); box-shadow: 0 18px 40px rgba(52,48,39,.09); }

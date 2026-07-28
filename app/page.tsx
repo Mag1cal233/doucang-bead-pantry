@@ -139,6 +139,7 @@ export default function Home() {
   const [completedColors, setCompletedColors] = useState<string[]>([]);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [ignoreStock, setIgnoreStock] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -161,7 +162,7 @@ export default function Home() {
   function generate() {
     setIsGenerating(true);
     window.setTimeout(() => {
-      setSelectedPlan(strategy);
+      setSelectedPlan(ignoreStock ? "quality" : strategy);
       setIsGenerating(false);
       go("plans");
     }, 850);
@@ -368,7 +369,12 @@ export default function Home() {
               <div className="setting-row"><div><label>最大颜色数</label><p>减少零散色块，更容易制作</p></div><select aria-label="最大颜色数" defaultValue="12"><option>8 种</option><option>12 种</option><option>16 种</option></select></div>
               <div className="setting-row"><div><label>主体优化</label><p>强化五官与外轮廓</p></div><button className="toggle on" aria-label="开启主体优化"><i /></button></div>
               <div className="setting-row"><div><label>保留安全库存</label><p>不消耗常用色的保留颗数</p></div><button className="toggle on" aria-label="开启保留安全库存"><i /></button></div>
-              <button className="generate-button" onClick={generate} disabled={isGenerating}>{isGenerating ? <><i className="spinner" /> 正在计算全局配色…</> : <>生成库存适配图纸 <span>→</span></>}</button>
+              <button className={`ignore-stock-option ${ignoreStock ? "active" : ""}`} onClick={() => setIgnoreStock(!ignoreStock)} aria-pressed={ignoreStock}>
+                <span className="infinity-mark">∞</span>
+                <span><b>无视当前库存</b><small>按完整品牌色库生成，缺豆保留并生成采购清单</small></span>
+                <span className={`toggle ${ignoreStock ? "on" : ""}`}><i /></span>
+              </button>
+              <button className="generate-button" onClick={generate} disabled={isGenerating}>{isGenerating ? <><i className="spinner" /> 正在计算全局配色…</> : <>{ignoreStock ? "按完整色库生成图纸" : "生成库存适配图纸"} <span>→</span></>}</button>
               <p className="privacy-note">图片仅用于本次生成，不会公开到社区</p>
             </div>
           </section>
@@ -378,6 +384,7 @@ export default function Home() {
       {screen === "plans" && (
         <div className="page plans-page">
           <section className="plans-heading"><div><span className="step-tag">02 · 选择方案</span><h1>同一张图，三种完成方式</h1><p>先看效果，也看清需要多少豆。</p></div><button className="secondary" onClick={() => go("create")}>← 调整设置</button></section>
+          {ignoreStock && <div className="ignore-stock-banner"><span>∞</span><div><b>已无视当前库存</b><small>下列方案按完整品牌色库生成；缺少的颜色不会被替换，并会加入采购清单。</small></div><button onClick={() => { setIgnoreStock(false); go("create"); }}>恢复库存约束</button></div>}
           <section className="plan-grid">
             {plans.map((plan) => (
               <article key={plan.id} className={`plan-card ${selectedPlan === plan.id ? "selected" : ""}`} onClick={() => setSelectedPlan(plan.id)}>
