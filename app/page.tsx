@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { mardColors, mardSeries } from "./mard-colors";
 
 type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
 type Strategy = "zero" | "balance" | "quality";
@@ -35,7 +36,7 @@ const brandCatalog = [
   { name: "卡卡家", origin: "国内常用", series: "多尺寸", coverage: "常用套装与单色", state: "待复核", tone: "#687f98" },
 ];
 
-const catalogColors = [
+const demoCatalogColors = [
   ["A1", "#faf4c8"], ["A4", "#fbed56"], ["A6", "#feac4c"], ["A10", "#f77c31"],
   ["A14", "#fd543d"], ["A19", "#fd7c72"], ["B2", "#63f347"], ["B8", "#1c9c4f"],
   ["B10", "#95d3c2"], ["B21", "#156a6b"], ["C3", "#86b8e5"], ["C8", "#4977bc"],
@@ -351,7 +352,7 @@ async function generatePattern(imageUrl: string, size: number, strategy: Strateg
 
   const data = context.getImageData(0, 0, size, size).data;
   const stockColors = inventory.map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
-  const fullColors = catalogColors.map(([code, color]) => ({ code, color, name: "完整色库", count: 0, safe: 0, limit: Infinity }));
+  const fullColors = mardColors.map((item) => ({ code: item.code, color: item.hex, name: "MARD 公开参考色", count: 0, safe: 0, limit: Infinity }));
   const palette = strategy === "quality"
     ? fullColors
     : strategy === "balance"
@@ -413,6 +414,10 @@ export default function Home() {
   const [inventoryReady, setInventoryReady] = useState(false);
   const [projectCompleted, setProjectCompleted] = useState(false);
   const [colorShift, setColorShift] = useState<ColorShift>("original");
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogScope, setCatalogScope] = useState<"all" | "base" | "extended">("all");
+  const [catalogSeries, setCatalogSeries] = useState("all");
+  const [catalogPage, setCatalogPage] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
@@ -466,6 +471,19 @@ export default function Home() {
   const sectionStartColumn = activeSectionColumn * 10;
   const sectionHeight = Math.min(10, craftSize - sectionStartRow);
   const sectionWidth = Math.min(10, craftSize - sectionStartColumn);
+  const catalogSource = selectedBrand === "MARD"
+    ? mardColors.map((item) => ({ code: item.code, color: item.hex, series: item.series, range: item.range, confidence: item.confidence }))
+    : demoCatalogColors.map(([code, color]) => ({ code, color, series: code.replace(/\d/g, ""), range: "base" as const, confidence: "reference" as const }));
+  const filteredCatalog = catalogSource.filter((item) => {
+    const matchesQuery = !catalogQuery || item.code.toLowerCase().includes(catalogQuery.toLowerCase()) || item.color.toLowerCase().includes(catalogQuery.toLowerCase());
+    const matchesScope = catalogScope === "all" || item.range === catalogScope;
+    const matchesSeries = catalogSeries === "all" || item.series === catalogSeries;
+    return matchesQuery && matchesScope && matchesSeries;
+  });
+  const catalogPageSize = 48;
+  const catalogPageCount = Math.max(1, Math.ceil(filteredCatalog.length / catalogPageSize));
+  const activeCatalogPage = Math.min(catalogPage, catalogPageCount - 1);
+  const visibleCatalog = filteredCatalog.slice(activeCatalogPage * catalogPageSize, (activeCatalogPage + 1) * catalogPageSize);
 
   function go(next: Screen) {
     setScreen(next);
@@ -528,6 +546,19 @@ export default function Home() {
     }
     setProjectCompleted(true);
     flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${craftPattern.filter(Boolean).length} 颗`);
+  }
+
+  function addCatalogColor(code: string, color: string) {
+    if (selectedBrand !== "MARD") {
+      flash(`${selectedBrand} 色卡仍在校准，暂不写入正式库存`);
+      return;
+    }
+    setInventory((items) => {
+      const existing = items.find((item) => item.brand === "MARD" && item.code === code);
+      if (existing) return items.map((item) => item === existing ? { ...item, count: item.count + 100 } : item);
+      return [...items, { brand: "MARD", code, name: code, color, count: 100, safe: 20 }];
+    });
+    flash(`MARD ${code} 已加入库存，默认 100 颗`);
   }
 
   async function generate() {
@@ -685,7 +716,7 @@ export default function Home() {
               <label className="catalog-search">⌕ <input aria-label="搜索品牌" placeholder="搜索品牌或系列" /></label>
               <div className="brand-list">
                 {brandCatalog.map((brand) => (
-                  <button key={brand.name} className={selectedBrand === brand.name ? "active" : ""} onClick={() => setSelectedBrand(brand.name)}>
+                  <button key={brand.name} className={selectedBrand === brand.name ? "active" : ""} onClick={() => { setSelectedBrand(brand.name); setCatalogQuery(""); setCatalogScope("all"); setCatalogSeries("all"); setCatalogPage(0); }}>
                     <i style={{ background: brand.tone }}>{brand.name.slice(0, 1)}</i>
                     <span><b>{brand.name}</b><small>{brand.origin} · {brand.series}</small></span>
                     <em className={brand.state === "已建档" ? "ready" : "pending"}>{brand.state}</em>
@@ -696,21 +727,24 @@ export default function Home() {
 
             <div className="panel color-browser">
               <div className="color-browser-head">
-                <div><span>当前色卡</span><h2>{selectedBrand}</h2><p>{brandCatalog.find((brand) => brand.name === selectedBrand)?.coverage}</p></div>
-                <div className="version-pill"><i /> 色卡版本 2026.07</div>
+                <div><span>当前色卡</span><h2>{selectedBrand}</h2><p>{selectedBrand === "MARD" ? "291 项公开参考色 · 基础与扩展系列分开标记" : brandCatalog.find((brand) => brand.name === selectedBrand)?.coverage}</p></div>
+                <div className="version-pill"><i /> {selectedBrand === "MARD" ? "参考数据 2026.07" : "校准中"}</div>
               </div>
               <div className="catalog-toolbar">
-                <div><button className="chip active">全部颜色</button><button className="chip">基础色</button><button className="chip">透明</button><button className="chip">夜光 / 特殊</button></div>
-                <label className="search">⌕ <input aria-label="搜索品牌色号" placeholder="输入色号" /></label>
+                <div><button className={`chip ${catalogScope === "all" ? "active" : ""}`} onClick={() => { setCatalogScope("all"); setCatalogPage(0); }}>全部 {catalogSource.length}</button><button className={`chip ${catalogScope === "base" ? "active" : ""}`} onClick={() => { setCatalogScope("base"); setCatalogPage(0); }}>基础系列</button><button className={`chip ${catalogScope === "extended" ? "active" : ""}`} onClick={() => { setCatalogScope("extended"); setCatalogPage(0); }}>扩展 / 特殊</button></div>
+                <label className="search">⌕ <input aria-label="搜索品牌色号" placeholder="输入色号或 HEX" value={catalogQuery} onChange={(event) => { setCatalogQuery(event.target.value); setCatalogPage(0); }} /></label>
               </div>
+              {selectedBrand === "MARD" && <div className="series-filter"><button className={catalogSeries === "all" ? "active" : ""} onClick={() => { setCatalogSeries("all"); setCatalogPage(0); }}>全部系列</button>{mardSeries.map((series) => <button key={series} className={catalogSeries === series ? "active" : ""} onClick={() => { setCatalogSeries(series); setCatalogPage(0); }}>{series}</button>)}</div>}
               <div className="master-swatches">
-                {catalogColors.map(([code, color]) => (
-                  <button key={code} onClick={() => flash(`${selectedBrand} ${code} 已加入我的豆仓`)}>
-                    <i style={{ background: color }}><span /></i><b>{code}</b><small>加入库存</small>
+                {visibleCatalog.map((item) => (
+                  <button key={item.code} onClick={() => addCatalogColor(item.code, item.color)} title={`${item.code} · ${item.color}`}>
+                    <i style={{ background: item.color }}><span /></i><b>{item.code}</b><small>{selectedBrand === "MARD" ? item.confidence === "cross-reference" ? "交叉参考" : item.range === "base" ? "基础参考" : "扩展参考" : "待校准"}</small>
                   </button>
                 ))}
               </div>
-              <div className="catalog-pagination"><span>示意展示 24 个色号</span><button onClick={() => flash("正式版会加载该品牌的完整在售及历史色号")}>查看完整色卡 →</button></div>
+              {!visibleCatalog.length && <div className="catalog-empty">没有找到匹配色号</div>}
+              <div className="catalog-pagination"><span>第 {activeCatalogPage + 1} / {catalogPageCount} 页 · 共 {filteredCatalog.length} 个色号</span><div><button disabled={activeCatalogPage === 0} onClick={() => setCatalogPage(Math.max(0, activeCatalogPage - 1))}>← 上一页</button><button disabled={activeCatalogPage === catalogPageCount - 1} onClick={() => setCatalogPage(Math.min(catalogPageCount - 1, activeCatalogPage + 1))}>下一页 →</button></div></div>
+              {selectedBrand === "MARD" && <div className="catalog-source-note"><b>数据说明</b><span>HEX 仅供屏幕预览，不等于实物测色。289 项参考自 <a href="https://www.pixel-beads.com/mard-bead-color-chart" target="_blank" rel="noreferrer">PixelBeads 色卡</a>；公开列表缺少的 T2、T3 由 <a href="https://heybead.com/bead-colors" target="_blank" rel="noreferrer">HeyBead</a> 交叉补充，等待实物复核。</span></div>}
             </div>
           </section>
 
