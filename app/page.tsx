@@ -734,7 +734,15 @@ export default function Home() {
               {uploadedImage && <button className="change-image" onClick={() => fileRef.current?.click()}>更换图片</button>}
             </div>
             <div className="settings-panel panel">
-              <div className="setting-block"><label>成品尺寸 <span>{gridSize} × {gridSize}</span></label><input type="range" min="15" max="58" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))} /><div className="range-label"><span>15</span><span>{gridSize}</span><span>58</span></div></div>
+              <div className="setting-block size-setting">
+                <label>成品尺寸 <span>{gridSize} × {gridSize}</span></label>
+                <input type="range" min="15" max="116" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))} />
+                <div className="range-label"><span>15</span><span>{gridSize}</span><span>116</span></div>
+                <div className="size-presets" aria-label="常用画布尺寸">
+                  {[29, 58, 87, 116].map((size) => <button key={size} className={gridSize === size ? "active" : ""} onClick={() => setGridSize(size)}><b>{size} × {size}</b><small>{size / 29} × {size / 29} 块底板</small></button>)}
+                </div>
+                {gridSize > 58 && <p className="large-canvas-note"><span>大图模式</span> 将自动使用 10×10 分区施工；建议上传轮廓清晰、分辨率较高的图片。</p>}
+              </div>
               <div className="setting-block"><label>生成策略</label><div className="strategy-grid">
                 {[{id:"zero",title:"零补货",desc:"完全使用现有库存"},{id:"balance",title:"平衡方案",desc:"允许少量补货"},{id:"quality",title:"效果优先",desc:"保留最多细节"}].map((item) => <button key={item.id} className={strategy === item.id ? "selected" : ""} onClick={() => setStrategy(item.id as Strategy)}><i /><b>{item.title}</b><small>{item.desc}</small></button>)}
               </div></div>
@@ -771,7 +779,7 @@ export default function Home() {
           <section className="plan-footer panel">
             <div><span>已选择</span><h3>{currentPlan.title}</h3><p>{currentPlan.note}</p></div>
             <div className="usage-preview">{inventory.slice(0, 5).map((item) => <i key={item.code} style={{ background: item.color }} />)}<span>共 {currentPlan.colors} 色</span></div>
-            <button className="primary" onClick={() => go("craft")}>使用这套图纸 <span>→</span></button>
+            <button className="primary" onClick={() => { if (gridSize > 58) setPatternView("section"); go("craft"); }}>使用这套图纸 <span>→</span></button>
           </section>
         </div>
       )}
