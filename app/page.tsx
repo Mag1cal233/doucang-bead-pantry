@@ -2,7 +2,7 @@
 
 import { ChangeEvent, CSSProperties, useMemo, useRef, useState } from "react";
 
-type Screen = "home" | "inventory" | "create" | "plans" | "craft";
+type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
 type Strategy = "zero" | "balance" | "quality";
 
 const swatches = [
@@ -15,6 +15,28 @@ const swatches = [
   { code: "A8", name: "湖水蓝", color: "#69aeb1", count: 96, safe: 25 },
   { code: "N2", name: "炭黑", color: "#35302e", count: 431, safe: 100 },
 ];
+
+const brandCatalog = [
+  { name: "MARD", origin: "国内常用", series: "5 mm · 2.6 mm", coverage: "标准 221 + 扩展系列", state: "已建档", tone: "#536d58" },
+  { name: "Artkal", origin: "国际品牌", series: "S · C · A · R · M", coverage: "硬豆、软豆与多尺寸", state: "已建档", tone: "#cb7d5a" },
+  { name: "Perler", origin: "国际品牌", series: "Classic · Mini · Caps", coverage: "常规与特殊材质", state: "已建档", tone: "#d5a13b" },
+  { name: "Hama", origin: "国际品牌", series: "Mini · Midi · Maxi · Bio", coverage: "全尺寸共用色号体系", state: "已建档", tone: "#739a9c" },
+  { name: "Nabbi", origin: "国际品牌", series: "Midi · Mini", coverage: "常用色与透明系列", state: "校准中", tone: "#8c779d" },
+  { name: "Yant", origin: "国内常用", series: "5 mm · 2.6 mm", coverage: "基础与扩展色板", state: "校准中", tone: "#b66b70" },
+  { name: "COCO 可可", origin: "国内常用", series: "5 mm · 2.6 mm", coverage: "常用套装与单色", state: "待复核", tone: "#9c745c" },
+  { name: "漫漫", origin: "国内常用", series: "多尺寸", coverage: "常用套装与单色", state: "待复核", tone: "#708c72" },
+  { name: "盼盼拼豆", origin: "国内常用", series: "多尺寸", coverage: "常用套装与单色", state: "待复核", tone: "#bf7658" },
+  { name: "卡卡家", origin: "国内常用", series: "多尺寸", coverage: "常用套装与单色", state: "待复核", tone: "#687f98" },
+];
+
+const catalogColors = [
+  ["A1", "#faf4c8"], ["A4", "#fbed56"], ["A6", "#feac4c"], ["A10", "#f77c31"],
+  ["A14", "#fd543d"], ["A19", "#fd7c72"], ["B2", "#63f347"], ["B8", "#1c9c4f"],
+  ["B10", "#95d3c2"], ["B21", "#156a6b"], ["C3", "#86b8e5"], ["C8", "#4977bc"],
+  ["D2", "#7065a8"], ["D7", "#b985ba"], ["E4", "#f09ec1"], ["E9", "#cc587d"],
+  ["F3", "#b98563"], ["F8", "#754631"], ["G2", "#e7dfd0"], ["G7", "#8f8a82"],
+  ["H1", "#f8f5ed"], ["H5", "#272626"], ["M3", "#d8ccb6"], ["M8", "#a69680"],
+] as const;
 
 const catPattern = [
   "....nn...nn....",
@@ -110,6 +132,7 @@ function BrandMark() {
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("home");
+  const [selectedBrand, setSelectedBrand] = useState("MARD");
   const [strategy, setStrategy] = useState<Strategy>("zero");
   const [selectedPlan, setSelectedPlan] = useState<Strategy>("zero");
   const [highlight, setHighlight] = useState<string | null>(null);
@@ -156,6 +179,7 @@ export default function Home() {
         <nav className="desktop-nav" aria-label="主导航">
           <button className={screen === "home" ? "active" : ""} onClick={() => go("home")}>首页</button>
           <button className={screen === "inventory" ? "active" : ""} onClick={() => go("inventory")}>我的豆仓</button>
+          <button className={screen === "catalog" ? "active" : ""} onClick={() => go("catalog")}>品牌色库</button>
           <button className={["create", "plans"].includes(screen) ? "active" : ""} onClick={() => go("create")}>创作</button>
           <button className={screen === "craft" ? "active" : ""} onClick={() => go("craft")}>制作中</button>
         </nav>
@@ -250,6 +274,81 @@ export default function Home() {
         </div>
       )}
 
+      {screen === "catalog" && (
+        <div className="page catalog-page">
+          <section className="catalog-hero">
+            <div>
+              <span className="eyebrow">MASTER COLOR LIBRARY</span>
+              <h1>全品牌色卡库</h1>
+              <p>一个色彩引擎，统一管理不同品牌、尺寸、材质和版本。生成时既能锁定单一品牌，也能跨品牌寻找更合适的库存替代色。</p>
+            </div>
+            <div className="catalog-seal"><strong>Lab</strong><span>实物色彩标准</span><small>持续更新</small></div>
+          </section>
+
+          <section className="catalog-stats">
+            <div><strong>10</strong><span>首批常用品牌</span><small>支持继续扩展</small></div>
+            <div><strong>全系列</strong><span>尺寸与材质分开建档</span><small>避免同号混用</small></div>
+            <div><strong>3 级</strong><span>数据可信度</span><small>公开色卡 · 实物 · 社区</small></div>
+            <div><strong>ΔE</strong><span>跨品牌色差</span><small>不是只比较 HEX</small></div>
+          </section>
+
+          <section className="catalog-workspace">
+            <aside className="panel brand-index">
+              <div className="catalog-panel-head"><div><small>品牌目录</small><h2>常用拼豆品牌</h2></div><button onClick={() => flash("已打开新品牌收录申请")}>＋ 申请收录</button></div>
+              <label className="catalog-search">⌕ <input aria-label="搜索品牌" placeholder="搜索品牌或系列" /></label>
+              <div className="brand-list">
+                {brandCatalog.map((brand) => (
+                  <button key={brand.name} className={selectedBrand === brand.name ? "active" : ""} onClick={() => setSelectedBrand(brand.name)}>
+                    <i style={{ background: brand.tone }}>{brand.name.slice(0, 1)}</i>
+                    <span><b>{brand.name}</b><small>{brand.origin} · {brand.series}</small></span>
+                    <em className={brand.state === "已建档" ? "ready" : "pending"}>{brand.state}</em>
+                  </button>
+                ))}
+              </div>
+            </aside>
+
+            <div className="panel color-browser">
+              <div className="color-browser-head">
+                <div><span>当前色卡</span><h2>{selectedBrand}</h2><p>{brandCatalog.find((brand) => brand.name === selectedBrand)?.coverage}</p></div>
+                <div className="version-pill"><i /> 色卡版本 2026.07</div>
+              </div>
+              <div className="catalog-toolbar">
+                <div><button className="chip active">全部颜色</button><button className="chip">基础色</button><button className="chip">透明</button><button className="chip">夜光 / 特殊</button></div>
+                <label className="search">⌕ <input aria-label="搜索品牌色号" placeholder="输入色号" /></label>
+              </div>
+              <div className="master-swatches">
+                {catalogColors.map(([code, color]) => (
+                  <button key={code} onClick={() => flash(`${selectedBrand} ${code} 已加入我的豆仓`)}>
+                    <i style={{ background: color }}><span /></i><b>{code}</b><small>加入库存</small>
+                  </button>
+                ))}
+              </div>
+              <div className="catalog-pagination"><span>示意展示 24 个色号</span><button onClick={() => flash("正式版会加载该品牌的完整在售及历史色号")}>查看完整色卡 →</button></div>
+            </div>
+          </section>
+
+          <section className="catalog-bottom-grid">
+            <article className="panel cross-brand-card">
+              <div className="cross-copy"><small>CROSS-BRAND MATCH</small><h2>跨品牌近似色</h2><p>缺少某个色号时，按照实物 Lab 色差、材质和熨烫效果推荐候选色，而不是简单复制屏幕颜色。</p><button onClick={() => flash("已进入跨品牌替色体验")}>体验替色</button></div>
+              <div className="match-demo">
+                <div className="source-color"><i style={{ background: "#d89b42" }} /><span><b>MARD · C5</b><small>目标颜色</small></span></div>
+                <div className="match-line"><span>最接近</span><i /></div>
+                {["Artkal", "Hama", "Perler"].map((name, index) => <div className="candidate" key={name}><i style={{ background: ["#d99d49", "#d39a42", "#e1a64e"][index] }} /><span><b>{name}</b><small>候选 {index + 1} · 待实物确认</small></span><em>{["1.8", "2.4", "3.1"][index]}</em></div>)}
+              </div>
+            </article>
+            <article className="panel data-standard-card">
+              <small>DATA STANDARD</small><h2>每个颜色都有出处</h2>
+              <div className="standard-list">
+                <div><span className="grade grade-a">A</span><p><b>品牌公开色卡</b><small>确认名称、色号、系列和尺寸</small></p></div>
+                <div><span className="grade grade-b">B</span><p><b>实物标准光源测色</b><small>用于最终配色与跨品牌替换</small></p></div>
+                <div><span className="grade grade-c">C</span><p><b>用户补充样本</b><small>经过复核后才进入正式色库</small></p></div>
+              </div>
+              <p className="standard-note">品牌新增、停产或批次变化均保留历史版本，旧图纸不会因更新失效。</p>
+            </article>
+          </section>
+        </div>
+      )}
+
       {screen === "create" && (
         <div className="page create-page">
           <section className="create-heading"><span className="step-tag">01 · 新建图纸</span><h1>从一张喜欢的图片开始</h1><p>我们会保护主体轮廓，再用你真正拥有的颜色重新绘制。</p></section>
@@ -335,7 +434,7 @@ export default function Home() {
         <button className={screen === "inventory" ? "active" : ""} onClick={() => go("inventory")}><span>◫</span>豆仓</button>
         <button className="mobile-create" onClick={() => go("create")}><span>＋</span></button>
         <button className={screen === "craft" ? "active" : ""} onClick={() => go("craft")}><span>▦</span>制作</button>
-        <button onClick={() => flash("个人中心将在正式版开放")}><span>○</span>我的</button>
+        <button className={screen === "catalog" ? "active" : ""} onClick={() => go("catalog")}><span>◉</span>色库</button>
       </nav>
       {toast && <div className="toast">✓ {toast}</div>}
     </main>
