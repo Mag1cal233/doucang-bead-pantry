@@ -527,6 +527,7 @@ export default function Home() {
   const [replacementScope, setReplacementScope] = useState<ReplacementScope>("all");
   const [replacementPreview, setReplacementPreview] = useState<ReplacementPreview | null>(null);
   const [replacementHistory, setReplacementHistory] = useState<ReplacementHistoryItem[]>([]);
+  const [showShoppingList, setShowShoppingList] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
@@ -554,6 +555,15 @@ export default function Home() {
     setReplacementPreview(null);
   }, [selectedPlan]);
 
+  useEffect(() => {
+    if (!showShoppingList) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowShoppingList(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [showShoppingList]);
+
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
   const lowStockCount = useMemo(() => inventory.filter((item) => item.count < item.safe * 4).length, [inventory]);
@@ -574,6 +584,25 @@ export default function Home() {
   const craftPattern = selectedPattern ?? fallbackPattern;
   const craftSize = selectedPattern ? gridSize : 15;
   const craftUsage = generatedUsage.length ? generatedUsage : fallbackUsage;
+  const purchaseItems = useMemo(() => craftUsage.map((item) => {
+    const stock = inventory.find((entry) => entry.code === item.code);
+    const current = stock?.count ?? 0;
+    const safe = stock?.safe ?? 0;
+    const usable = Math.max(0, current - safe);
+    return {
+      ...item,
+      brand: stock?.brand ?? "MARD",
+      current,
+      safe,
+      usable,
+      shortage: Math.max(0, item.count - usable),
+    };
+  }).filter((item) => item.shortage > 0).sort((a, b) => b.shortage - a.shortage), [craftUsage, inventory]);
+  const purchaseGroups = useMemo(() => [...new Set(purchaseItems.map((item) => item.brand))].map((brand) => ({
+    brand,
+    items: purchaseItems.filter((item) => item.brand === brand),
+  })), [purchaseItems]);
+  const purchaseTotal = purchaseItems.reduce((sum, item) => sum + item.shortage, 0);
   const chartHighlight = selectedPattern ? highlight : (highlight ? fallbackCodes[highlight]?.code ?? highlight : null);
   const previewHighlight = selectedPattern ? highlight : (highlight ? Object.entries(fallbackCodes).find(([, item]) => item.code === highlight)?.[0] ?? highlight : null);
   const sectionRowCount = Math.ceil(craftSize / 10);
@@ -709,6 +738,47 @@ export default function Home() {
     }
     setProjectCompleted(true);
     flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${craftPattern.filter(Boolean).length} 颗`);
+  }
+
+  async function copyShoppingList() {
+    if (!purchaseItems.length) {
+      flash("当前库存已经足够，无需采购");
+      return;
+    }
+    const lines = [
+      `豆仓采购清单｜${generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}`,
+      `${craftSize}×${craftSize}｜缺 ${purchaseItems.length} 个色号，共 ${purchaseTotal} 颗`,
+      "已按安全库存预留计算",
+      "",
+      ...purchaseGroups.flatMap((group) => [
+        `【${group.brand}】`,
+        ...group.items.map((item) => `${item.code} ${item.name}：买 ${item.shortage} 颗（图纸 ${item.count} / 可用 ${item.usable} / 预留 ${item.safe}）`),
+        "",
+      ]),
+    ];
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      flash("采购清单已复制");
+    } catch {
+      flash("复制失败，请使用导出 CSV");
+    }
+  }
+
+  function exportShoppingList() {
+    if (!purchaseItems.length) {
+      flash("当前库存已经足够，无需采购");
+      return;
+    }
+    const header = "品牌,色号,颜色名称,图纸需要,当前库存,安全预留,可用库存,建议购买";
+    const rows = purchaseItems.map((item) => [item.brand, item.code, item.name, item.count, item.current, item.safe, item.usable, item.shortage].join(","));
+    const blob = new Blob([`\uFEFF${[header, ...rows].join("\r\n")}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `豆仓采购清单-${craftSize}x${craftSize}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    flash("采购清单已导出");
   }
 
   function addCatalogColor(code: string, color: string) {
@@ -1046,7 +1116,7 @@ export default function Home() {
         <div className="page craft-page">
           <section className="craft-top">
             <div><span className="step-tag">03 · 制作模式</span><h1>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}</p></div>
-            <div className="craft-actions"><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
+            <div className="craft-actions"><button className="shopping-action" onClick={() => setShowShoppingList(true)}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, generatedPatterns ? "我的库存适配图纸" : "橘猫午后"); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
@@ -1115,8 +1185,48 @@ export default function Home() {
                 </div>
                 {replacementPreview && <div className="replace-confirm"><div><i style={{ background: highlightedUsage.color }} /><span>→</span><i style={{ background: replacementPreview.color }} /><b>{highlightedUsage.code} → {replacementPreview.toCode}</b></div><p>这是屏幕参考色预览，确认后会重新计算用量和缺货。</p><div><button onClick={() => setReplacementPreview(null)}>取消</button><button className="apply" onClick={applyReplacement}>确认替换 {replacementNeeded} 格</button></div></div>}
               </div>}
-              <div className="smart-tip"><span>✦</span><div><b>{ignoreStock ? "采购清单模式" : "库存提醒"}</b><p>{ignoreStock ? "缺少的颜色会完整保留，不会自动替换成库存色。" : generatedPatterns ? "这张图已经按当前安全库存重新分配颜色。" : "完成后还会剩 334 颗炭黑，安全库存充足。"}</p></div></div>
+              <button className={`purchase-summary ${purchaseItems.length ? "has-shortage" : "enough"}`} onClick={() => setShowShoppingList(true)}>
+                <span>{purchaseItems.length ? "袋" : "✓"}</span><div><small>智能采购清单</small><b>{purchaseItems.length ? `缺 ${purchaseItems.length} 个色号 · ${purchaseTotal} 颗` : "当前库存已经足够"}</b><p>已自动扣除可用库存，并保留安全库存</p></div><em>查看 →</em>
+              </button>
+              <div className="smart-tip"><span>✦</span><div><b>{ignoreStock ? "采购清单模式" : "库存提醒"}</b><p>{ignoreStock ? "缺少的颜色会完整保留，并自动计算需要购买的数量。" : generatedPatterns ? "这张图已经按当前安全库存重新分配颜色。" : "示例图也会根据你的本机库存计算采购缺口。"}</p></div></div>
             </aside>
+          </section>
+        </div>
+      )}
+
+      {showShoppingList && (
+        <div className="shopping-backdrop" onMouseDown={() => setShowShoppingList(false)}>
+          <section className="shopping-dialog" role="dialog" aria-modal="true" aria-labelledby="shopping-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="shopping-head">
+              <div><span className="step-tag">库存自动核算</span><h2 id="shopping-title">智能采购清单</h2><p>图纸用量减去可用库存，安全库存不会被占用。</p></div>
+              <button aria-label="关闭采购清单" onClick={() => setShowShoppingList(false)}>×</button>
+            </header>
+            <div className="shopping-overview">
+              <div><small>需要购买</small><strong>{purchaseItems.length}<em> 色</em></strong></div>
+              <div><small>合计缺口</small><strong>{purchaseTotal.toLocaleString()}<em> 颗</em></strong></div>
+              <div><small>图纸总量</small><strong>{craftPattern.filter(Boolean).length.toLocaleString()}<em> 颗</em></strong></div>
+            </div>
+            <div className="shopping-note"><span>✦</span><p>缺口按“当前库存 − 安全预留”计算。换色或修改库存后，清单会立即更新。</p></div>
+            <div className="shopping-list">
+              {purchaseGroups.length ? purchaseGroups.map((group) => (
+                <div className="shopping-brand-group" key={group.brand}>
+                  <div className="shopping-brand-head"><b>{group.brand}</b><span>{group.items.length} 个色号 · 共 {group.items.reduce((sum, item) => sum + item.shortage, 0)} 颗</span></div>
+                  {group.items.map((item) => (
+                    <div className="shopping-row" key={`${group.brand}-${item.code}`}>
+                      <i style={{ background: item.color }} />
+                      <div className="shopping-color"><b>{item.code}</b><span>{item.name}</span></div>
+                      <div><small>图纸</small><strong>{item.count}</strong></div>
+                      <div><small>库存</small><strong>{item.current}</strong></div>
+                      <div><small>预留</small><strong>{item.safe}</strong></div>
+                      <div className="shopping-shortage"><small>建议购买</small><strong>+{item.shortage}</strong></div>
+                    </div>
+                  ))}
+                </div>
+              )) : (
+                <div className="shopping-empty"><span>✓</span><h3>这套图纸不用补货</h3><p>所有色号在保留安全库存后仍然足够。</p></div>
+              )}
+            </div>
+            <footer className="shopping-footer"><button onClick={() => setShowShoppingList(false)}>返回图纸</button><button onClick={exportShoppingList} disabled={!purchaseItems.length}>导出 CSV</button><button className="copy-list" onClick={copyShoppingList} disabled={!purchaseItems.length}>复制采购清单</button></footer>
           </section>
         </div>
       )}
