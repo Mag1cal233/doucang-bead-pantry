@@ -536,6 +536,8 @@ export default function Home() {
   const [replacementHistory, setReplacementHistory] = useState<ReplacementHistoryItem[]>([]);
   const [showShoppingList, setShowShoppingList] = useState(false);
   const [selectedPurchaseKeys, setSelectedPurchaseKeys] = useState<string[]>([]);
+  const [showBatchReplace, setShowBatchReplace] = useState(false);
+  const [batchSimilarity, setBatchSimilarity] = useState(75);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
@@ -564,13 +566,16 @@ export default function Home() {
   }, [selectedPlan]);
 
   useEffect(() => {
-    if (!showShoppingList) return;
+    if (!showShoppingList && !showBatchReplace) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShowShoppingList(false);
+      if (event.key === "Escape") {
+        setShowShoppingList(false);
+        setShowBatchReplace(false);
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showShoppingList]);
+  }, [showBatchReplace, showShoppingList]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
@@ -615,6 +620,38 @@ export default function Home() {
   const purchaseTotal = purchaseItems.reduce((sum, item) => sum + item.shortage, 0);
   const selectedPurchaseItems = purchaseItems.filter((item) => selectedPurchaseKeys.includes(`${item.brand}::${item.code}`));
   const selectedPurchaseTotal = selectedPurchaseItems.reduce((sum, item) => sum + item.shortage, 0);
+  const batchReplacementPlan = useMemo(() => {
+    if (!generatedPatterns) return [];
+    const remaining = new Map<string, number>();
+    inventory.forEach((item) => remaining.set(`${item.brand}::${item.code}`, Math.max(0, item.count - item.safe)));
+    craftUsage.forEach((item) => {
+      const key = `${item.brand}::${item.code}`;
+      remaining.set(key, Math.max(0, (remaining.get(key) ?? 0) - item.count));
+    });
+
+    return purchaseItems.map((source) => {
+      const sourceRgb = hexToRgb(source.color);
+      const candidates = inventory
+        .filter((item) => item.brand !== source.brand || item.code !== source.code)
+        .map((item) => {
+          const available = remaining.get(`${item.brand}::${item.code}`) ?? 0;
+          const distance = perceptualDistance(sourceRgb, hexToRgb(item.color));
+          const similarity = Math.max(0, Math.round(100 - Math.sqrt(distance) / 5));
+          return { ...item, available, similarity, distance };
+        })
+        .filter((item) => item.available >= source.count && item.similarity >= batchSimilarity)
+        .sort((a, b) => b.similarity - a.similarity || b.available - a.available);
+      const target = candidates[0];
+      if (target) {
+        const key = `${target.brand}::${target.code}`;
+        remaining.set(key, (remaining.get(key) ?? 0) - source.count);
+      }
+      return { source, target };
+    });
+  }, [batchSimilarity, craftUsage, generatedPatterns, inventory, purchaseItems]);
+  const resolvedBatchReplacements = batchReplacementPlan.filter((item) => item.target);
+  const batchChangedCells = resolvedBatchReplacements.reduce((sum, item) => sum + item.source.count, 0);
+  const batchResolvedShortage = resolvedBatchReplacements.reduce((sum, item) => sum + item.source.shortage, 0);
   const chartHighlight = selectedPattern ? highlight : (highlight ? fallbackCodes[highlight]?.code ?? highlight : null);
   const previewHighlight = selectedPattern ? highlight : (highlight ? Object.entries(fallbackCodes).find(([, item]) => item.code === highlight)?.[0] ?? highlight : null);
   const sectionRowCount = Math.ceil(craftSize / 10);
@@ -795,6 +832,32 @@ export default function Home() {
     flash(`已入库 ${selectedPurchaseItems.length} 个色号，共 ${selectedPurchaseTotal} 颗`);
   }
 
+  function openBatchReplace() {
+    if (!generatedPatterns) {
+      flash("请先生成一张图纸，再进行批量换色");
+      return;
+    }
+    setReplacementPreview(null);
+    setShowBatchReplace(true);
+  }
+
+  function applyBatchReplacements() {
+    if (!generatedPatterns || !selectedPattern || !resolvedBatchReplacements.length) return;
+    const replacements = new Map(resolvedBatchReplacements.map((item) => [`${item.source.brand}::${item.source.code}`, item.target!]));
+    const nextCells = selectedPattern.map((cell) => {
+      if (!cell) return cell;
+      const target = replacements.get(`${cell.brand ?? "MARD"}::${cell.code}`);
+      return target ? { brand: target.brand, code: target.code, color: target.color, name: target.name } : cell;
+    });
+    setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: "批量换色", toCode: `${resolvedBatchReplacements.length} 组` }]);
+    setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
+    setHighlight(null);
+    setCompletedColors([]);
+    setShowBatchReplace(false);
+    setProjectCompleted(false);
+    flash(`已批量替换 ${resolvedBatchReplacements.length} 个缺货色，减少缺口 ${batchResolvedShortage} 颗`);
+  }
+
   async function copyShoppingList() {
     if (!purchaseItems.length) {
       flash("当前库存已经足够，无需采购");
@@ -875,7 +938,7 @@ export default function Home() {
     if (!latest) return;
     setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
     setSelectedPlan(latest.plan);
-    setHighlight(latest.fromCode);
+    setHighlight(latest.fromCode === "批量换色" ? null : latest.fromCode);
     setReplacementPreview(null);
     setReplacementHistory((history) => history.slice(0, -1));
     setProjectCompleted(false);
@@ -1182,6 +1245,7 @@ export default function Home() {
                 <div className="view-switch"><button className={patternView === "chart" ? "active" : ""} onClick={() => setPatternView("chart")}>完整图纸</button><button className={patternView === "section" ? "active" : ""} onClick={() => setPatternView("section")}>10×10 分区拼</button><button className={patternView === "preview" ? "active" : ""} onClick={() => setPatternView("preview")}>成品预览</button></div>
                 <div className="chart-tools">
                   {patternView === "chart" && <><button aria-label="缩小图纸" onClick={() => setChartZoom(Math.max(.6, chartZoom - .2))}>−</button><strong>{Math.round(chartZoom * 100)}%</strong><button aria-label="放大图纸" onClick={() => setChartZoom(Math.min(2, chartZoom + .2))}>＋</button></>}
+                  {replacementHistory.length > 0 && <button onClick={undoReplacement}>↶ 撤销换色</button>}
                   <button onClick={() => setChartFocus(!chartFocus)}>{chartFocus ? "退出全屏" : "专注查看"}</button>
                 </div>
               </div>
@@ -1246,6 +1310,9 @@ export default function Home() {
                 </div>
                 {replacementPreview && <div className="replace-confirm"><div><i style={{ background: highlightedUsage.color }} /><span>→</span><i style={{ background: replacementPreview.color }} /><b>{highlightedUsage.brand} {highlightedUsage.code} → {replacementPreview.brand} {replacementPreview.toCode}</b></div><p>这是屏幕参考色近似匹配，不等于实物测色；确认后会重新计算品牌用量和缺货。</p><div><button onClick={() => setReplacementPreview(null)}>取消</button><button className="apply" onClick={applyReplacement}>确认替换 {replacementNeeded} 格</button></div></div>}
               </div>}
+              {generatedPatterns && <button className={`batch-summary ${resolvedBatchReplacements.length ? "ready" : "unavailable"}`} onClick={openBatchReplace}>
+                <span>⇄</span><div><small>库存优先 · 跨品牌</small><b>{purchaseItems.length ? resolvedBatchReplacements.length ? `可一键替换 ${resolvedBatchReplacements.length} 个缺货色` : "暂未找到足量近似库存" : "当前没有缺货颜色"}</b><p>先预览整批换色，再决定是否应用</p></div><em>智能换色 →</em>
+              </button>}
               <button className={`purchase-summary ${purchaseItems.length ? "has-shortage" : "enough"}`} onClick={openShoppingList}>
                 <span>{purchaseItems.length ? "袋" : "✓"}</span><div><small>智能采购清单</small><b>{purchaseItems.length ? `缺 ${purchaseItems.length} 个色号 · ${purchaseTotal} 颗` : "当前库存已经足够"}</b><p>已自动扣除可用库存，并保留安全库存</p></div><em>查看 →</em>
               </button>
@@ -1291,6 +1358,38 @@ export default function Home() {
               )}
             </div>
             <footer className="shopping-footer"><button onClick={() => setShowShoppingList(false)}>返回图纸</button><button onClick={exportShoppingList} disabled={!purchaseItems.length}>导出 CSV</button><button onClick={copyShoppingList} disabled={!purchaseItems.length}>复制清单</button><button className="receive-list" onClick={receivePurchasedItems} disabled={!selectedPurchaseItems.length}>已购入库 · {selectedPurchaseTotal} 颗</button></footer>
+          </section>
+        </div>
+      )}
+
+      {showBatchReplace && (
+        <div className="shopping-backdrop" onMouseDown={() => setShowBatchReplace(false)}>
+          <section className="shopping-dialog batch-dialog" role="dialog" aria-modal="true" aria-labelledby="batch-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="shopping-head">
+              <div><span className="step-tag">库存优先 · 跨品牌</span><h2 id="batch-title">一键替换缺货颜色</h2><p>仅使用扣除安全预留和当前图纸占用后，数量仍然足够的库存色。</p></div>
+              <button aria-label="关闭批量换色" onClick={() => setShowBatchReplace(false)}>×</button>
+            </header>
+            <div className="batch-tolerance">
+              <div><b>颜色接近程度</b><span>阈值越高，颜色越接近，但可替换数量可能更少。</span></div>
+              <div>{[{ value: 85, label: "严格" }, { value: 75, label: "平衡" }, { value: 65, label: "宽松" }].map((item) => <button key={item.value} className={batchSimilarity === item.value ? "active" : ""} onClick={() => setBatchSimilarity(item.value)}>{item.label}<small>≥ {item.value}%</small></button>)}</div>
+            </div>
+            <div className="shopping-overview batch-overview">
+              <div><small>缺货色号</small><strong>{purchaseItems.length}<em> 色</em></strong></div>
+              <div><small>可整组替换</small><strong>{resolvedBatchReplacements.length}<em> 色</em></strong></div>
+              <div><small>预计减少缺口</small><strong>{batchResolvedShortage.toLocaleString()}<em> 颗</em></strong></div>
+            </div>
+            <div className="shopping-note batch-note"><span>!</span><p>为保持图纸颜色一致，每个缺货色会整组替换，而不是只替换缺少的几颗；本次预计改动 {batchChangedCells.toLocaleString()} 格。</p></div>
+            <div className="shopping-list batch-list">
+              {batchReplacementPlan.length ? batchReplacementPlan.map(({ source, target }) => (
+                <div className={`batch-row ${target ? "resolved" : "unresolved"}`} key={`${source.brand}-${source.code}`}>
+                  <div className="batch-color"><i style={{ background: source.color }} /><span><small>原色 · 缺 {source.shortage}</small><b>{source.brand} {source.code}</b><em>{source.name}</em></span></div>
+                  <span className="batch-arrow">→</span>
+                  {target ? <div className="batch-color target"><i style={{ background: target.color }} /><span><small>库存可用 {target.available}</small><b>{target.brand} {target.code}</b><em>{target.name}</em></span></div> : <div className="batch-no-match"><b>保留原色</b><span>没有数量足够且达到 {batchSimilarity}% 的库存色</span></div>}
+                  <div className={`batch-score ${target ? "good" : "none"}`}><small>屏幕近似</small><strong>{target ? `${target.similarity}%` : "—"}</strong></div>
+                </div>
+              )) : <div className="shopping-empty"><span>✓</span><h3>当前没有缺货颜色</h3><p>无需批量替换，可以直接开始制作。</p></div>}
+            </div>
+            <footer className="shopping-footer batch-footer"><button onClick={() => setShowBatchReplace(false)}>取消</button><button className="receive-list" onClick={applyBatchReplacements} disabled={!resolvedBatchReplacements.length}>应用 {resolvedBatchReplacements.length} 个替换</button></footer>
           </section>
         </div>
       )}
