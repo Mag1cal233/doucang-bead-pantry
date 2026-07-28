@@ -4,6 +4,8 @@ import { ChangeEvent, CSSProperties, useMemo, useRef, useState } from "react";
 
 type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
 type Strategy = "zero" | "balance" | "quality";
+type GeneratedCell = { code: string; color: string } | null;
+type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
 
 const swatches = [
   { code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
@@ -121,6 +123,92 @@ function BeadArtwork({ highlight }: { highlight?: string | null }) {
   );
 }
 
+function GeneratedArtwork({ cells, size, highlight }: { cells: GeneratedCell[]; size: number; highlight?: string | null }) {
+  return (
+    <div
+      className={`bead-art generated-art ${size > 40 ? "dense" : ""}`}
+      style={{ gridTemplateColumns: `repeat(${size}, 1fr)` }}
+      role="img"
+      aria-label={`${size}乘${size}库存适配拼豆图纸`}
+    >
+      {cells.map((cell, index) => (
+        <span
+          key={index}
+          className={`bead ${cell ? "" : "empty"} ${cell && highlight && cell.code !== highlight ? "dimmed" : ""}`}
+          style={{ "--bead-color": cell?.color ?? "transparent" } as CSSProperties}
+          title={cell?.code}
+        />
+      ))}
+    </div>
+  );
+}
+
+function hexToRgb(hex: string) {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
+}
+
+function perceptualDistance(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }) {
+  const meanRed = (a.r + b.r) / 2;
+  const red = a.r - b.r;
+  const green = a.g - b.g;
+  const blue = a.b - b.b;
+  return (2 + meanRed / 256) * red * red + 4 * green * green + (2 + (255 - meanRed) / 256) * blue * blue;
+}
+
+async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean): Promise<GeneratedCell[]> {
+  const image = new Image();
+  image.src = imageUrl;
+  await image.decode();
+
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("无法读取图片");
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  const scale = Math.max(size / image.naturalWidth, size / image.naturalHeight);
+  const width = image.naturalWidth * scale;
+  const height = image.naturalHeight * scale;
+  context.clearRect(0, 0, size, size);
+  context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+
+  const data = context.getImageData(0, 0, size, size).data;
+  const stockColors = swatches.map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
+  const fullColors = catalogColors.map(([code, color]) => ({ code, color, name: "完整色库", count: 0, safe: 0, limit: Infinity }));
+  const palette = strategy === "quality"
+    ? fullColors
+    : strategy === "balance"
+      ? stockColors.map((item) => ({ ...item, limit: ignoreStock ? Infinity : item.limit + 35 }))
+      : stockColors;
+
+  const pixels = Array.from({ length: size * size }, (_, index) => {
+    const offset = index * 4;
+    return data[offset + 3] < 32 ? null : { r: data[offset], g: data[offset + 1], b: data[offset + 2] };
+  });
+  const candidates = pixels.map((pixel) => pixel
+    ? palette
+        .map((item, paletteIndex) => ({ paletteIndex, cost: perceptualDistance(pixel, hexToRgb(item.color)) }))
+        .sort((a, b) => a.cost - b.cost)
+    : []);
+  const priority = pixels
+    .map((pixel, index) => ({ index, regret: pixel ? (candidates[index][1]?.cost ?? candidates[index][0].cost) - candidates[index][0].cost : -1 }))
+    .filter((item) => item.regret >= 0)
+    .sort((a, b) => b.regret - a.regret);
+  const remaining = palette.map((item) => item.limit);
+  const result: GeneratedCell[] = Array(size * size).fill(null);
+
+  for (const item of priority) {
+    const choice = candidates[item.index].find((candidate) => remaining[candidate.paletteIndex] > 0) ?? candidates[item.index][0];
+    const selected = palette[choice.paletteIndex];
+    result[item.index] = { code: selected.code, color: selected.color };
+    if (Number.isFinite(remaining[choice.paletteIndex])) remaining[choice.paletteIndex] -= 1;
+  }
+  return result;
+}
+
 function BrandMark() {
   return (
     <button className="brand" aria-label="回到豆仓首页">
@@ -140,12 +228,27 @@ export default function Home() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [ignoreStock, setIgnoreStock] = useState(false);
+  const [gridSize, setGridSize] = useState(29);
+  const [generatedPatterns, setGeneratedPatterns] = useState<GeneratedPatterns | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => swatches.reduce((sum, item) => sum + item.count, 0), []);
   const progress = Math.round((completedColors.length / 5) * 100);
+  const selectedPattern = generatedPatterns?.[selectedPlan] ?? null;
+  const generatedUsage = useMemo(() => {
+    if (!selectedPattern) return [];
+    const usage = new Map<string, { code: string; color: string; count: number; name: string }>();
+    selectedPattern.forEach((cell) => {
+      if (!cell) return;
+      const current = usage.get(cell.code);
+      const stockColor = swatches.find((item) => item.code === cell.code);
+      usage.set(cell.code, { code: cell.code, color: cell.color, count: (current?.count ?? 0) + 1, name: stockColor?.name ?? "色卡色" });
+    });
+    return [...usage.values()].sort((a, b) => b.count - a.count);
+  }, [selectedPattern]);
+  const actualProgress = generatedUsage.length ? Math.round((completedColors.length / generatedUsage.length) * 100) : progress;
 
   function go(next: Screen) {
     setScreen(next);
@@ -157,15 +260,31 @@ export default function Home() {
     if (!file) return;
     const url = URL.createObjectURL(file);
     setUploadedImage(url);
+    setGeneratedPatterns(null);
+    setCompletedColors([]);
   }
 
-  function generate() {
+  async function generate() {
+    if (!uploadedImage) {
+      flash("请先上传一张图片");
+      fileRef.current?.click();
+      return;
+    }
     setIsGenerating(true);
-    window.setTimeout(() => {
+    try {
+      const [zero, balance, quality] = await Promise.all([
+        generatePattern(uploadedImage, gridSize, "zero", ignoreStock),
+        generatePattern(uploadedImage, gridSize, "balance", ignoreStock),
+        generatePattern(uploadedImage, gridSize, "quality", ignoreStock),
+      ]);
+      setGeneratedPatterns({ zero, balance, quality });
       setSelectedPlan(ignoreStock ? "quality" : strategy);
-      setIsGenerating(false);
       go("plans");
-    }, 850);
+    } catch {
+      flash("图片处理失败，请换一张图片重试");
+    } finally {
+      setIsGenerating(false);
+    }
   }
 
   function flash(message: string) {
@@ -362,7 +481,7 @@ export default function Home() {
               {uploadedImage && <button className="change-image" onClick={() => fileRef.current?.click()}>更换图片</button>}
             </div>
             <div className="settings-panel panel">
-              <div className="setting-block"><label>成品尺寸 <span>29 × 29</span></label><input type="range" min="15" max="58" defaultValue="29" /><div className="range-label"><span>15</span><span>29</span><span>58</span></div></div>
+              <div className="setting-block"><label>成品尺寸 <span>{gridSize} × {gridSize}</span></label><input type="range" min="15" max="58" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))} /><div className="range-label"><span>15</span><span>{gridSize}</span><span>58</span></div></div>
               <div className="setting-block"><label>生成策略</label><div className="strategy-grid">
                 {[{id:"zero",title:"零补货",desc:"完全使用现有库存"},{id:"balance",title:"平衡方案",desc:"允许少量补货"},{id:"quality",title:"效果优先",desc:"保留最多细节"}].map((item) => <button key={item.id} className={strategy === item.id ? "selected" : ""} onClick={() => setStrategy(item.id as Strategy)}><i /><b>{item.title}</b><small>{item.desc}</small></button>)}
               </div></div>
@@ -389,10 +508,10 @@ export default function Home() {
             {plans.map((plan) => (
               <article key={plan.id} className={`plan-card ${selectedPlan === plan.id ? "selected" : ""}`} onClick={() => setSelectedPlan(plan.id)}>
                 <div className="plan-badge">{plan.eyebrow}</div>
-                <div className="plan-art"><BeadArtwork /></div>
+                <div className="plan-art">{generatedPatterns ? <GeneratedArtwork cells={generatedPatterns[plan.id]} size={gridSize} /> : <BeadArtwork />}</div>
                 <div className="plan-title"><div><h2>{plan.title}</h2><p>{plan.note}</p></div><span className="radio"><i /></span></div>
                 <div className="score-row"><div><span>还原度</span><strong>{plan.match}<small>分</small></strong></div><div><span>库存满足</span><strong>{plan.stock}<small>%</small></strong></div></div>
-                <div className="plan-meta"><span>{plan.colors} 种颜色</span><span>{plan.time}</span><span className={plan.shortage ? "short" : "enough"}>{plan.shortage ? `缺 ${plan.shortage} 颗` : "无需补货"}</span></div>
+                <div className="plan-meta"><span>{generatedPatterns ? new Set(generatedPatterns[plan.id].filter(Boolean).map((cell) => cell?.code)).size : plan.colors} 种颜色</span><span>{plan.time}</span><span className={plan.shortage ? "short" : "enough"}>{ignoreStock ? "生成采购清单" : plan.shortage ? `缺 ${plan.shortage} 颗` : "无需补货"}</span></div>
               </article>
             ))}
           </section>
@@ -407,30 +526,30 @@ export default function Home() {
       {screen === "craft" && (
         <div className="page craft-page">
           <section className="craft-top">
-            <div><span className="step-tag">03 · 制作模式</span><h1>橘猫午后</h1><p>{currentPlan.title} · 15 × 15 · 225 颗</p></div>
-            <div className="craft-actions"><button className="secondary" onClick={() => flash("图纸 PNG 已准备导出")}>导出图纸</button><button className="primary" onClick={() => flash("作品已完成，库存已扣减 225 颗")}>完成并扣库存</button></div>
+            <div><span className="step-tag">03 · 制作模式</span><h1>{generatedPatterns ? "我的库存适配图纸" : "橘猫午后"}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}</p></div>
+            <div className="craft-actions"><button className="secondary" onClick={() => flash("图纸 PNG 已准备导出")}>导出图纸</button><button className="primary" onClick={() => flash(ignoreStock ? "作品已完成；采购清单模式不扣库存" : `作品已完成，库存已扣减 ${selectedPattern?.filter(Boolean).length ?? 225} 颗`)}>完成{ignoreStock ? "作品" : "并扣库存"}</button></div>
           </section>
           <section className="craft-layout">
             <div className="craft-canvas panel">
               <div className="canvas-toolbar"><div><button className="active">图纸</button><button>色号</button><button>预览</button></div><span>＋ &nbsp; 100% &nbsp; −</span></div>
-              <div className="large-art"><BeadArtwork highlight={highlight} /></div>
+              <div className="large-art">{selectedPattern ? <GeneratedArtwork cells={selectedPattern} size={gridSize} highlight={highlight} /> : <BeadArtwork highlight={highlight} />}</div>
               <div className="coordinate-hint">点击右侧颜色，只查看该色号的位置</div>
             </div>
             <aside className="craft-sidebar panel">
-              <div className="progress-head"><div><span>制作进度</span><strong>{progress}%</strong></div><div className="progress-track"><i style={{ width: `${progress}%` }} /></div><p>{completedColors.length} / 5 个颜色已完成</p></div>
+              <div className="progress-head"><div><span>制作进度</span><strong>{actualProgress}%</strong></div><div className="progress-track"><i style={{ width: `${actualProgress}%` }} /></div><p>{completedColors.length} / {generatedUsage.length || 5} 个颜色已完成</p></div>
               <div className="color-tasks">
-                {[
+                {(generatedUsage.length ? generatedUsage.map((item) => ({ key: item.code, ...item })) : [
                   { key: "n", code: "N2", name: "炭黑", count: 68, color: "#35302e" },
                   { key: "c", code: "C5", name: "姜黄色", count: 96, color: "#d89b42" },
                   { key: "o", code: "M1", name: "奶油白", count: 18, color: "#f5eddb" },
                   { key: "p", code: "M7", name: "蜜桃粉", count: 12, color: "#e98d8c" },
                   { key: "s", code: "A3", name: "鼠尾草", count: 31, color: "#91a487" },
-                ].map((item) => {
+                ]).map((item) => {
                   const done = completedColors.includes(item.key);
                   return <button key={item.key} className={`${highlight === item.key ? "active" : ""} ${done ? "done" : ""}`} onClick={() => setHighlight(highlight === item.key ? null : item.key)}><i style={{ background: item.color }} /><span><b>{item.code} · {item.name}</b><small>{item.count} 颗</small></span><em onClick={(event) => { event.stopPropagation(); setCompletedColors(done ? completedColors.filter((key) => key !== item.key) : [...completedColors, item.key]); }}>{done ? "✓" : "○"}</em></button>;
                 })}
               </div>
-              <div className="smart-tip"><span>✦</span><div><b>库存提醒</b><p>完成后还会剩 334 颗炭黑，安全库存充足。</p></div></div>
+              <div className="smart-tip"><span>✦</span><div><b>{ignoreStock ? "采购清单模式" : "库存提醒"}</b><p>{ignoreStock ? "缺少的颜色会完整保留，不会自动替换成库存色。" : generatedPatterns ? "这张图已经按当前安全库存重新分配颜色。" : "完成后还会剩 334 颗炭黑，安全库存充足。"}</p></div></div>
             </aside>
           </section>
         </div>

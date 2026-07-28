@@ -83,6 +83,9 @@ button { color: inherit; }
 .bead::after { content: ""; display: block; width: 32%; height: 32%; margin: 34%; border-radius: 50%; background: rgba(55,45,35,.36); box-shadow: 0 0 0 1px rgba(255,255,255,.24); }
 .bead.empty { opacity: 0; box-shadow: none; }
 .bead.dimmed { opacity: .1; transform: scale(.84); }
+.generated-art { gap: 1.25px; padding: 3.5%; }
+.generated-art.dense { gap: .55px; padding: 2.5%; }
+.generated-art.dense .bead::after { width: 24%; height: 24%; margin: 38%; }
 .floating-card { position: absolute; background: rgba(255,254,250,.95); z-index: 3; border-radius: 15px; box-shadow: 0 12px 30px rgba(52,66,52,.16); padding: 12px 15px; display: flex; align-items: center; gap: 11px; }
 .floating-card b, .floating-card small { display: block; }
 .floating-card b { font-size: 13px; }
@@ -436,6 +439,7 @@ button { color: inherit; }
   .plan-footer .primary span { display: none; }
   .large-art { width: 92%; margin-top: 25px; padding: 11px; }
   .large-art .bead-art { gap: 2px; }
+  .large-art .generated-art { gap: .7px; }
   .craft-canvas { min-height: 480px; }
   .mobile-nav { position: fixed; display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; left: 10px; right: 10px; bottom: 10px; height: 64px; padding: 6px; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,254,250,.94); backdrop-filter: blur(16px); box-shadow: 0 12px 35px rgba(48,46,41,.18); z-index: 30; }
   .mobile-nav button { border: 0; background: transparent; color: #8b867d; font-size: 9px; display: grid; place-items: center; gap: 2px; cursor: pointer; }
