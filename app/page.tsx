@@ -218,6 +218,62 @@ function GeneratedArtwork({ cells, size, highlight }: { cells: GeneratedCell[]; 
   );
 }
 
+function PatternOverview({ cells, size, zoom, highlight }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const baseSize = Math.min(720, Math.max(360, size * 8));
+  const renderedSize = Math.round(baseSize * zoom);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
+
+    const cellPixels = 10;
+    const canvasSize = size * cellPixels;
+    canvas.width = canvasSize;
+    canvas.height = canvasSize;
+    context.clearRect(0, 0, canvasSize, canvasSize);
+    context.fillStyle = "#fffefa";
+    context.fillRect(0, 0, canvasSize, canvasSize);
+
+    cells.forEach((cell, index) => {
+      if (!cell) return;
+      const row = Math.floor(index / size);
+      const column = index % size;
+      context.globalAlpha = highlight && cell.code !== highlight ? .12 : 1;
+      context.fillStyle = cell.color;
+      context.fillRect(column * cellPixels, row * cellPixels, cellPixels, cellPixels);
+    });
+    context.globalAlpha = 1;
+
+    if (zoom >= 1.25) {
+      context.lineWidth = 1;
+      for (let index = 0; index <= size; index += 1) {
+        const position = index * cellPixels + .5;
+        context.strokeStyle = index % 5 === 0 ? "rgba(196, 119, 51, .72)" : "rgba(54, 52, 47, .2)";
+        context.beginPath();
+        context.moveTo(position, 0);
+        context.lineTo(position, canvasSize);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(0, position);
+        context.lineTo(canvasSize, position);
+        context.stroke();
+      }
+    }
+  }, [cells, highlight, size, zoom]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="pattern-overview"
+      style={{ width: `${renderedSize}px`, height: `${renderedSize}px` }}
+      role="img"
+      aria-label={`${size}×${size} 图纸总览，可放大缩小查看`}
+    />
+  );
+}
+
 function textColor(background: string) {
   const { r, g, b } = hexToRgb(background);
   return (r * 299 + g * 587 + b * 114) / 1000 > 154 ? "#27251f" : "#ffffff";
@@ -566,6 +622,7 @@ export default function Home() {
   const [generatedPatterns, setGeneratedPatterns] = useState<GeneratedPatterns | null>(null);
   const [patternView, setPatternView] = useState<PatternView>("chart");
   const [chartZoom, setChartZoom] = useState(1);
+  const [overviewZoom, setOverviewZoom] = useState(1);
   const [chartFocus, setChartFocus] = useState(false);
   const [sectionRow, setSectionRow] = useState(0);
   const [sectionColumn, setSectionColumn] = useState(0);
@@ -589,6 +646,7 @@ export default function Home() {
   const [projectsReady, setProjectsReady] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [currentProjectTitle, setCurrentProjectTitle] = useState("我的库存适配图纸");
+  const overviewViewportRef = useRef<HTMLDivElement>(null);
   const [showProjects, setShowProjects] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1339,7 +1397,14 @@ export default function Home() {
               <div className="setting-block"><label>生成策略</label><div className="strategy-grid">
                 {[{id:"zero",title:"零补货",desc:"完全使用现有库存"},{id:"balance",title:"平衡方案",desc:"允许少量补货"},{id:"quality",title:"效果优先",desc:"保留最多细节"}].map((item) => <button key={item.id} className={strategy === item.id ? "selected" : ""} onClick={() => setStrategy(item.id as Strategy)}><i /><b>{item.title}</b><small>{item.desc}</small></button>)}
               </div></div>
-              <div className="setting-row"><div><label>最大颜色数</label><p>减少零散色块，更容易制作</p></div><select aria-label="最大颜色数" value={maxColors} onChange={(event) => setMaxColors(Number(event.target.value))}><option value={8}>8 种</option><option value={12}>12 种</option><option value={16}>16 种</option><option value={24}>24 种</option></select></div>
+              <div className="setting-block color-count-setting">
+                <label>颜色数量上限 <span>{maxColors} 种</span></label>
+                <p>颜色越少越容易拼，颜色越多越接近原图；生成后仍可逐色替换。</p>
+                <div className="color-count-grid" aria-label="选择图纸使用颜色种类">
+                  {[4, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64].map((count) => <button key={count} className={maxColors === count ? "active" : ""} onClick={() => setMaxColors(count)}>{count}<small>色</small></button>)}
+                </div>
+                {maxColors >= 48 && <p className="color-count-warning">精细配色会产生更多零散色块，更适合大画布或追求还原度的作品。</p>}
+              </div>
               <div className="setting-block color-shift-setting">
                 <label>色彩偏转 <span>{({ original: "保持原图", warm: "偏暖修正", cool: "偏冷修正", bright: "提亮修正", soft: "柔和修正" } as Record<ColorShift, string>)[colorShift]}</span></label>
                 <p>当屏幕颜色与豆子效果不协调时，先调整整体色调，再重新匹配库存色号。</p>
@@ -1400,9 +1465,14 @@ export default function Home() {
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
               <div className="canvas-toolbar">
-                <div className="view-switch"><button className={patternView === "chart" ? "active" : ""} onClick={() => setPatternView("chart")}>完整图纸</button><button className={patternView === "section" ? "active" : ""} onClick={() => setPatternView("section")}>10×10 分区拼</button><button className={patternView === "preview" ? "active" : ""} onClick={() => setPatternView("preview")}>成品预览</button></div>
+                <div className="view-switch"><button className={patternView === "chart" ? "active" : ""} onClick={() => setPatternView("chart")}>完整图纸</button><button className={patternView === "section" ? "active" : ""} onClick={() => setPatternView("section")}>10×10 分区拼</button><button className={patternView === "preview" ? "active" : ""} onClick={() => setPatternView("preview")}>图纸总览</button></div>
                 <div className="chart-tools">
                   {patternView === "chart" && <><button aria-label="缩小图纸" onClick={() => setChartZoom(Math.max(.6, chartZoom - .2))}>−</button><strong>{Math.round(chartZoom * 100)}%</strong><button aria-label="放大图纸" onClick={() => setChartZoom(Math.min(2, chartZoom + .2))}>＋</button></>}
+                  {patternView === "preview" && <><button aria-label="缩小总览" disabled={overviewZoom <= .5} onClick={() => setOverviewZoom(Math.max(.5, overviewZoom - .25))}>−</button><strong>{Math.round(overviewZoom * 100)}%</strong><button aria-label="放大总览" disabled={overviewZoom >= 3} onClick={() => setOverviewZoom(Math.min(3, overviewZoom + .25))}>＋</button><button onClick={() => {
+                    const baseSize = Math.min(720, Math.max(360, craftSize * 8));
+                    const viewportWidth = overviewViewportRef.current?.clientWidth ?? 720;
+                    setOverviewZoom(Math.max(.5, Math.min(3, Math.round(((viewportWidth - 64) / baseSize) * 20) / 20)));
+                  }}>适合窗口</button></>}
                   {replacementHistory.length > 0 && <button onClick={undoReplacement}>↶ 撤销换色</button>}
                   <button onClick={() => setChartFocus(!chartFocus)}>{chartFocus ? "退出全屏" : "专注查看"}</button>
                 </div>
@@ -1436,9 +1506,17 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                <div className="preview-stage"><div className="large-art">{selectedPattern ? <GeneratedArtwork cells={displayPattern} size={gridSize} highlight={replacementPreview ? null : previewHighlight} /> : <BeadArtwork highlight={previewHighlight} />}</div><p>{replacementPreview ? `正在预览 ${replacementPreview.fromCode} → ${replacementPreview.toCode}` : "预览用于查看整体成品；制作时请切回高清施工图。"}</p></div>
+                <div className="overview-stage">
+                  <div className="overview-title"><div><b>整张图纸一览</b><span>拖动画布查看局部，125% 以上显示逐格网线</span></div><em>{replacementPreview ? `正在预览 ${replacementPreview.fromCode} → ${replacementPreview.toCode}` : "每 5 格橙色分区"}</em></div>
+                  <div className="overview-viewport" ref={overviewViewportRef}>
+                    <div className="overview-canvas-frame">
+                      <PatternOverview cells={displayPattern} size={craftSize} zoom={overviewZoom} highlight={replacementPreview ? null : previewHighlight} />
+                    </div>
+                  </div>
+                  <div className="overview-stats"><span><b>{craftSize} × {craftSize}</b><small>画布尺寸</small></span><span><b>{displayPattern.filter(Boolean).length.toLocaleString()}</b><small>豆子总数</small></span><span><b>{craftUsage.length}</b><small>使用颜色</small></span><span><b>{Math.round(overviewZoom * 100)}%</b><small>当前缩放</small></span></div>
+                </div>
               )}
-              <div className="coordinate-hint">可横向、纵向滚动查看；点击右侧颜色可高亮该色号</div>
+              <div className="coordinate-hint">{patternView === "preview" ? "使用上方 − / ＋ 缩放总览；点击右侧颜色可单独高亮该色号" : "可横向、纵向滚动查看；点击右侧颜色可高亮该色号"}</div>
             </div>
             <aside className="craft-sidebar panel">
               <div className="progress-head"><div><span>制作进度</span><strong>{actualProgress}%</strong></div><div className="progress-track"><i style={{ width: `${actualProgress}%` }} /></div><p>{completedColors.length} / {generatedUsage.length || 5} 个颜色已完成</p></div>
