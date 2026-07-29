@@ -49,8 +49,11 @@ test("ships the finished product and cell editor without starter artifacts", asy
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /type CellEditTool = "paint" \| "erase" \| "pick"/);
+  assert.match(page, /type CellEditTool = "paint" \| "erase" \| "pick" \| "fill"/);
   assert.match(page, /function handleCellEdit/);
+  assert.match(page, /function redoReplacement/);
+  assert.match(page, /mirrorEdit/);
+  assert.match(page, /区域填充/);
   assert.match(page, /格子修图/);
   assert.match(page, /editable=\{editMode\}/);
   assert.match(css, /\.cell-editor\s*\{/);

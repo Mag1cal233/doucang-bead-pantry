@@ -10,7 +10,7 @@ type GeneratedCell = { brand?: string; code: string; color: string; name?: strin
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
 type PatternView = "chart" | "section" | "preview";
 type ColorShift = "original" | "warm" | "cool" | "bright" | "soft";
-type CellEditTool = "paint" | "erase" | "pick";
+type CellEditTool = "paint" | "erase" | "pick" | "fill";
 type UsageItem = { brand: string; code: string; color: string; count: number; name: string };
 type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
 type ReplacementScope = "all" | "section";
@@ -64,6 +64,11 @@ const replacementBrands: ReplacementBrand[] = ["MARD", "Artkal", "Perler", "Hama
 
 function colorKey(brand: string, code: string) {
   return `${brand}::${code}`;
+}
+
+function sameGeneratedCell(a: GeneratedCell, b: GeneratedCell) {
+  if (!a || !b) return a === b;
+  return (a.brand ?? "MARD") === (b.brand ?? "MARD") && a.code === b.code && a.color === b.color;
 }
 
 const catPattern = [
@@ -731,9 +736,11 @@ export default function Home() {
   const [replacementBrand, setReplacementBrand] = useState<ReplacementBrand>("MARD");
   const [replacementPreview, setReplacementPreview] = useState<ReplacementPreview | null>(null);
   const [replacementHistory, setReplacementHistory] = useState<ReplacementHistoryItem[]>([]);
+  const [redoHistory, setRedoHistory] = useState<ReplacementHistoryItem[]>([]);
   const [editMode, setEditMode] = useState(false);
   const [editTool, setEditTool] = useState<CellEditTool>("paint");
   const [editColor, setEditColor] = useState<NonNullable<GeneratedCell> | null>(null);
+  const [mirrorEdit, setMirrorEdit] = useState(false);
   const [speckleMaxSize, setSpeckleMaxSize] = useState(2);
   const [showShoppingList, setShowShoppingList] = useState(false);
   const [selectedPurchaseKeys, setSelectedPurchaseKeys] = useState<string[]>([]);
@@ -1031,6 +1038,7 @@ export default function Home() {
     setProjectCompleted(false);
     setReplacementPreview(null);
     setReplacementHistory([]);
+    setRedoHistory([]);
     setEditMode(false);
     setEditColor(null);
     setActiveProjectId(null);
@@ -1046,6 +1054,7 @@ export default function Home() {
     setProjectCompleted(false);
     setReplacementPreview(null);
     setReplacementHistory([]);
+    setRedoHistory([]);
     setEditMode(false);
     setEditColor(null);
     setPatternView("chart");
@@ -1068,6 +1077,7 @@ export default function Home() {
     setActiveProjectId(project.id);
     setReplacementPreview(null);
     setReplacementHistory([]);
+    setRedoHistory([]);
     setEditMode(false);
     setEditColor(null);
     setShowProjects(false);
@@ -1183,6 +1193,7 @@ export default function Home() {
       return target ? { brand: target.brand, code: target.code, color: target.color, name: target.name } : cell;
     });
     setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: "批量换色", toCode: `${resolvedBatchReplacements.length} 组` }]);
+    setRedoHistory([]);
     setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
     setHighlight(null);
     setCompletedColors([]);
@@ -1267,7 +1278,7 @@ export default function Home() {
         const first = editPalette[0];
         setEditColor({ brand: first.brand, code: first.code, color: first.color, name: first.name });
       }
-      flash("格子修图已开启：可使用画笔、橡皮或吸管");
+      flash("格子修图已开启：画笔、填充、橡皮和吸管都已就绪");
     }
   }
 
@@ -1287,16 +1298,54 @@ export default function Home() {
     const fallbackColor = editPalette[0];
     const paintColor = editColor ?? (fallbackColor ? { brand: fallbackColor.brand, code: fallbackColor.code, color: fallbackColor.color, name: fallbackColor.name } : null);
     const nextCell: GeneratedCell = editTool === "erase" ? null : paintColor ? { ...paintColor } : cell;
-    const currentBrand = cell?.brand ?? "MARD";
-    const nextBrand = nextCell?.brand ?? "MARD";
-    if ((!cell && !nextCell) || (cell && nextCell && currentBrand === nextBrand && cell.code === nextCell.code && cell.color === nextCell.color)) return;
+    if ((editTool === "paint" || editTool === "fill") && !paintColor) {
+      flash("请先选择一个画笔颜色");
+      return;
+    }
+
+    const changedIndexes = new Set<number>();
+    if (editTool === "fill") {
+      if (sameGeneratedCell(cell, nextCell)) return;
+      const visited = new Uint8Array(selectedPattern.length);
+      const queue = [index];
+      while (queue.length) {
+        const current = queue.pop()!;
+        if (visited[current]) continue;
+        visited[current] = 1;
+        if (!sameGeneratedCell(selectedPattern[current], cell)) continue;
+        changedIndexes.add(current);
+        const row = Math.floor(current / craftSize);
+        const column = current % craftSize;
+        if (row > 0) queue.push(current - craftSize);
+        if (row < craftSize - 1) queue.push(current + craftSize);
+        if (column > 0) queue.push(current - 1);
+        if (column < craftSize - 1) queue.push(current + 1);
+      }
+    } else {
+      changedIndexes.add(index);
+    }
+
+    if (mirrorEdit) {
+      [...changedIndexes].forEach((cellIndex) => {
+        const row = Math.floor(cellIndex / craftSize);
+        const column = cellIndex % craftSize;
+        changedIndexes.add(row * craftSize + (craftSize - 1 - column));
+      });
+    }
+
+    const effectiveIndexes = [...changedIndexes].filter((cellIndex) => !sameGeneratedCell(selectedPattern[cellIndex], nextCell));
+    if (!effectiveIndexes.length) return;
 
     const row = Math.floor(index / craftSize) + 1;
     const column = index % craftSize + 1;
-    const nextCells = selectedPattern.map((item, cellIndex) => cellIndex === index ? nextCell : item);
-    setReplacementHistory((history) => [...history.slice(-19), { plan: selectedPlan, cells: selectedPattern, fromCode: "手动修图", toCode: `${row} 行 ${column} 列` }]);
+    const nextCells = [...selectedPattern];
+    effectiveIndexes.forEach((cellIndex) => { nextCells[cellIndex] = nextCell; });
+    const actionLabel = editTool === "fill" ? `${effectiveIndexes.length} 格区域` : `${row} 行 ${column} 列${mirrorEdit && effectiveIndexes.length > 1 ? "＋镜像" : ""}`;
+    setReplacementHistory((history) => [...history.slice(-19), { plan: selectedPlan, cells: selectedPattern, fromCode: editTool === "fill" ? "区域填充" : "手动修图", toCode: actionLabel }]);
+    setRedoHistory([]);
     setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
     setProjectCompleted(false);
+    if (editTool === "fill") flash(`已填充 ${effectiveIndexes.length} 格${mirrorEdit ? "（含左右镜像）" : ""}`);
   }
 
   function applySpeckleCleanup() {
@@ -1310,6 +1359,7 @@ export default function Home() {
       return;
     }
     setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: "一键去杂色", toCode: `${cleaned.changed} 格` }]);
+    setRedoHistory([]);
     setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: cleaned.cells });
     setHighlight(null);
     setReplacementPreview(null);
@@ -1329,6 +1379,7 @@ export default function Home() {
       return { brand: replacementPreview.brand, code: replacementPreview.toCode, color: replacementPreview.color, name: replacementPreview.name };
     });
     setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: replacementPreview.fromCode, toCode: replacementPreview.toCode }]);
+    setRedoHistory([]);
     setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
     setHighlight(replacementPreview.toCode);
     setReplacementPreview(null);
@@ -1338,14 +1389,30 @@ export default function Home() {
 
   function undoReplacement() {
     const latest = replacementHistory[replacementHistory.length - 1];
-    if (!latest) return;
+    if (!latest || !generatedPatterns) return;
+    const currentCells = generatedPatterns[latest.plan];
+    setRedoHistory((history) => [...history.slice(-19), { ...latest, cells: currentCells }]);
     setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
     setSelectedPlan(latest.plan);
-    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" || latest.fromCode === "手动修图" ? null : latest.fromCode);
+    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" || latest.fromCode === "手动修图" || latest.fromCode === "区域填充" ? null : latest.fromCode);
     setReplacementPreview(null);
     setReplacementHistory((history) => history.slice(0, -1));
     setProjectCompleted(false);
     flash(`已撤销 ${latest.fromCode} → ${latest.toCode}`);
+  }
+
+  function redoReplacement() {
+    const latest = redoHistory[redoHistory.length - 1];
+    if (!latest || !generatedPatterns) return;
+    const currentCells = generatedPatterns[latest.plan];
+    setReplacementHistory((history) => [...history.slice(-19), { ...latest, cells: currentCells }]);
+    setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
+    setSelectedPlan(latest.plan);
+    setHighlight(null);
+    setReplacementPreview(null);
+    setRedoHistory((history) => history.slice(0, -1));
+    setProjectCompleted(false);
+    flash(`已重做 ${latest.fromCode} → ${latest.toCode}`);
   }
 
   async function generate() {
@@ -1370,6 +1437,7 @@ export default function Home() {
       setCurrentProjectTitle(`库存适配图纸 · ${gridSize}×${gridSize}`);
       setReplacementPreview(null);
       setReplacementHistory([]);
+      setRedoHistory([]);
       setEditMode(false);
       setEditColor(null);
       setSelectedPlan(ignoreStock ? "quality" : strategy);
@@ -1694,6 +1762,7 @@ export default function Home() {
                     setOverviewZoom(Math.max(.5, Math.min(3, Math.round(((viewportWidth - 64) / baseSize) * 20) / 20)));
                   }}>适合窗口</button></>}
                   {replacementHistory.length > 0 && <button onClick={undoReplacement}>↶ 撤销上次操作</button>}
+                  {redoHistory.length > 0 && <button onClick={redoReplacement}>↷ 重做</button>}
                   <button onClick={() => setChartFocus(!chartFocus)}>{chartFocus ? "退出全屏" : "专注查看"}</button>
                 </div>
               </div>
@@ -1701,16 +1770,18 @@ export default function Home() {
                 <div className="cell-editor-tools">
                   <div><b>格子修图</b><span>点击或轻触格子即可精修</span></div>
                   <button className={editTool === "paint" ? "active" : ""} onClick={() => setEditTool("paint")}>● 画笔</button>
+                  <button className={editTool === "fill" ? "active" : ""} onClick={() => setEditTool("fill")}>▣ 填充</button>
                   <button className={editTool === "erase" ? "active" : ""} onClick={() => setEditTool("erase")}>◇ 橡皮</button>
                   <button className={editTool === "pick" ? "active" : ""} onClick={() => setEditTool("pick")}>⌾ 吸管</button>
+                  <button className={`mirror-toggle ${mirrorEdit ? "active" : ""}`} aria-pressed={mirrorEdit} title="开启后每次修改都会同步到左右对称位置" onClick={() => setMirrorEdit(!mirrorEdit)}>↔ 左右对称</button>
                 </div>
                 <div className="cell-editor-palette" aria-label="选择修图颜色">
                   {editPalette.map((item) => {
-                    const active = editTool === "paint" && editColor?.code === item.code && (editColor.brand ?? "MARD") === item.brand;
-                    return <button key={`${item.brand}-${item.code}`} className={active ? "active" : ""} title={`${item.brand} ${item.code} · ${item.name}`} onClick={() => { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool("paint"); }}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand}</small></span></button>;
+                    const active = (editTool === "paint" || editTool === "fill") && editColor?.code === item.code && (editColor.brand ?? "MARD") === item.brand;
+                    return <button key={`${item.brand}-${item.code}`} className={active ? "active" : ""} title={`${item.brand} ${item.code} · ${item.name}`} onClick={() => { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool(editTool === "fill" ? "fill" : "paint"); }}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand}</small></span></button>;
                   })}
                 </div>
-                <p>{editTool === "paint" ? `画笔颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}` : editTool === "erase" ? "橡皮会把格子变为空白" : "点一下图纸中的颜色即可吸取"} · 每次修改都会自动保存，也可以撤销</p>
+                <p>{editTool === "paint" ? `画笔颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}` : editTool === "fill" ? `填充颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}，点击连续同色区域即可整片替换` : editTool === "erase" ? "橡皮会把格子变为空白" : "点一下图纸中的颜色即可吸取"}{mirrorEdit ? " · 左右对称已开启" : ""} · 每次修改都会自动保存，也可以撤销或重做</p>
               </div>}
               {patternView === "chart" ? (
                 <div className="chart-stage">
