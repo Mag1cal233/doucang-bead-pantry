@@ -27,17 +27,17 @@ async function render() {
   );
 }
 
-test("server-renders the 豆仓 product shell", async () => {
+test("server-renders the 一粒画 product shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.doesNotMatch(html, developmentPreviewMeta);
-  assert.match(html, /<title>豆仓｜按库存生成清晰拼豆图纸<\/title>/i);
-  assert.match(html, /你现有的豆/);
-  assert.match(html, /上传图片生成/);
-  assert.match(html, /我的豆仓/);
+  assert.match(html, /<title>一粒画｜把喜欢，一粒粒拼出来<\/title>/i);
+  assert.match(html, /把喜欢/);
+  assert.match(html, /开始图片转拼豆/);
+  assert.match(html, /我的库存/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
 });
 
@@ -55,6 +55,24 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(page, /function applyCellSelection/);
   assert.match(page, /function redoReplacement/);
   assert.match(page, /mirrorEdit/);
+  assert.match(page, /type ImageFit = "cover" \| "contain"/);
+  assert.match(page, /type ImageSampling = "smooth" \| "pixel"/);
+  assert.match(page, /alpha < \.25/);
+  assert.match(page, /function measurePixelImportance/);
+  assert.match(page, /function selectUsefulPaletteIndexes/);
+  assert.match(page, /function findNearestPaletteCandidates/);
+  assert.match(page, /const prepared = await preparePatternPixels/);
+  assert.match(page, /remaining\[paletteIndex\] <= 0/);
+  assert.match(page, /function calculatePlanMetrics/);
+  assert.match(page, /const metricsByPlan = useMemo/);
+  assert.match(page, /const recommendedPlan = useMemo<Strategy>/);
+  assert.match(page, /已按本次图片与当前库存实时计算/);
+  assert.match(page, /metrics\.beads\.toLocaleString\(\)/);
+  assert.match(page, /function usePinchZoom/);
+  assert.match(page, /touchmove", move, \{ passive: false \}/);
+  assert.match(page, /onZoomChange=\{editMode \? undefined : setChartZoom\}/);
+  assert.match(page, /手机可双指缩放/);
+  assert.match(page, /保留完整图片/);
   assert.match(page, /区域填充/);
   assert.match(page, /格子修图/);
   assert.match(page, /editable=\{editMode\}/);
@@ -62,9 +80,10 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(css, /\.chart-cell\.editable/);
   assert.match(css, /\.cell-selection-actions/);
   assert.match(css, /\.chart-cell\.selected-cell/);
+  assert.match(css, /\.touch-zoom-viewport\s*\{/);
   assert.match(css, /@media \(max-width: 620px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
-  assert.match(layout, /豆仓｜按库存生成清晰拼豆图纸/);
+  assert.match(layout, /一粒画｜把喜欢，一粒粒拼出来/);
   assert.doesNotMatch(layout, /Starter Project|codex-preview|_sites-preview/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
