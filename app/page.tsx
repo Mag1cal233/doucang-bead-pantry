@@ -1197,6 +1197,94 @@ function CreatorJourney({
   );
 }
 
+function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: string; onCancel: () => void; onApply: (image: string) => void; onUseOriginal: () => void }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
+  const [viewportSize, setViewportSize] = useState(420);
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragRef = useRef({ active: false, x: 0, y: 0, offsetX: 0, offsetY: 0 });
+  const baseScale = Math.max(viewportSize / naturalSize.width, viewportSize / naturalSize.height);
+  const displayWidth = naturalSize.width * baseScale * zoom;
+  const displayHeight = naturalSize.height * baseScale * zoom;
+  const limitX = Math.max(0, (displayWidth - viewportSize) / 2);
+  const limitY = Math.max(0, (displayHeight - viewportSize) / 2);
+  const clampOffset = (next: { x: number; y: number }) => ({
+    x: Math.max(-limitX, Math.min(limitX, next.x)),
+    y: Math.max(-limitY, Math.min(limitY, next.y)),
+  });
+  const clampedOffset = clampOffset(offset);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const updateSize = () => setViewportSize(viewport.getBoundingClientRect().width || 420);
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
+
+  function startDrag(event: React.PointerEvent<HTMLDivElement>) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { active: true, x: event.clientX, y: event.clientY, offsetX: clampedOffset.x, offsetY: clampedOffset.y };
+  }
+
+  function moveDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag.active) return;
+    setOffset(clampOffset({ x: drag.offsetX + event.clientX - drag.x, y: drag.offsetY + event.clientY - drag.y }));
+  }
+
+  function stopDrag() {
+    dragRef.current.active = false;
+  }
+
+  async function applyCrop() {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    const outputSize = 1400;
+    const canvas = document.createElement("canvas");
+    canvas.width = outputSize;
+    canvas.height = outputSize;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const scale = Math.max(viewportSize / image.naturalWidth, viewportSize / image.naturalHeight) * zoom;
+    const width = image.naturalWidth * scale;
+    const height = image.naturalHeight * scale;
+    const outputScale = outputSize / viewportSize;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, outputSize, outputSize);
+    context.drawImage(image, ((viewportSize - width) / 2 + clampedOffset.x) * outputScale, ((viewportSize - height) / 2 + clampedOffset.y) * outputScale, width * outputScale, height * outputScale);
+    onApply(canvas.toDataURL("image/png"));
+  }
+
+  return (
+    <section className="crop-dialog" role="dialog" aria-modal="true" aria-labelledby="crop-title" onPointerDown={(event) => event.stopPropagation()}>
+      <header className="crop-head">
+        <div><span className="step-tag">上传后先整理画面</span><h2 id="crop-title">裁出要拼的主体</h2><p>拖动图片调整位置，用缩放保留重点；方形区域就是最终进入图纸的画面。</p></div>
+        <button aria-label="关闭图片裁剪" onClick={onCancel}>×</button>
+      </header>
+      <div className="crop-workspace">
+        <div className="crop-viewport" ref={viewportRef} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
+          <img src={source} alt="待裁剪图片" draggable={false} onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} style={{ width: `${displayWidth}px`, height: `${displayHeight}px`, transform: `translate(calc(-50% + ${clampedOffset.x}px), calc(-50% + ${clampedOffset.y}px))` }} />
+          <div className="crop-thirds" aria-hidden="true"><i /><i /><i /><i /></div>
+          <span className="crop-hint">拖动调整主体位置</span>
+        </div>
+        <aside className="crop-controls">
+          <div><span>缩放画面</span><strong>{Math.round(zoom * 100)}%</strong></div>
+          <input aria-label="裁剪图片缩放" type="range" min="1" max="3" step="0.01" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
+          <div className="crop-zoom-presets">{[1, 1.5, 2, 3].map((value) => <button className={Math.abs(zoom - value) < .01 ? "active" : ""} key={value} onClick={() => setZoom(value)}>{value}×</button>)}</div>
+          <button className="crop-reset" onClick={() => { setZoom(1); setOffset({ x: 0, y: 0 }); }}>↺ 恢复居中</button>
+          <div className="crop-note"><span>✦</span><p><b>裁剪不会降低图纸清晰度</b><small>会生成 1400 × 1400 的处理图，足够制作最大画布。</small></p></div>
+        </aside>
+      </div>
+      <footer className="crop-footer"><button onClick={onUseOriginal}>跳过裁剪，使用原图</button><button className="primary" onClick={applyCrop}>应用裁剪 <span>→</span></button></footer>
+    </section>
+  );
+}
+
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("home");
   const [showSplash, setShowSplash] = useState(true);
@@ -1207,6 +1295,8 @@ export default function Home() {
   const [highlight, setHighlight] = useState<string | null>(null);
   const [completedColors, setCompletedColors] = useState<string[]>([]);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+  const [cropSource, setCropSource] = useState<string | null>(null);
+  const [showImageCropper, setShowImageCropper] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [ignoreStock, setIgnoreStock] = useState(false);
   const [gridSize, setGridSize] = useState(29);
@@ -1342,18 +1432,19 @@ export default function Home() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    if (!showShoppingList && !showBatchReplace && !showProjects && !showInventoryAdder) return;
+    if (!showShoppingList && !showBatchReplace && !showProjects && !showInventoryAdder && !showImageCropper) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShowShoppingList(false);
         setShowBatchReplace(false);
         setShowProjects(false);
         setShowInventoryAdder(false);
+        setShowImageCropper(false);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showBatchReplace, showInventoryAdder, showProjects, showShoppingList]);
+  }, [showBatchReplace, showImageCropper, showInventoryAdder, showProjects, showShoppingList]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
@@ -1615,7 +1706,14 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
     const url = URL.createObjectURL(file);
-    setUploadedImage(url);
+    setCropSource(url);
+    setShowImageCropper(true);
+    event.target.value = "";
+  }
+
+  function acceptUploadedImage(image: string, cropped: boolean) {
+    setUploadedImage(image);
+    setShowImageCropper(false);
     setGeneratedPatterns(null);
     setGenerationReference(null);
     setCompletedColors([]);
@@ -1629,6 +1727,7 @@ export default function Home() {
     setEditColor(null);
     setActiveProjectId(null);
     setCurrentProjectTitle("我的库存适配图纸");
+    flash(cropped ? "裁剪已应用，可以继续设置图纸" : "已保留完整原图");
   }
 
   function handleHomeUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -1641,6 +1740,8 @@ export default function Home() {
     setGeneratedPatterns(null);
     setGenerationReference(null);
     setUploadedImage(null);
+    setCropSource(null);
+    setShowImageCropper(false);
     setActiveProjectId(null);
     setCurrentProjectTitle("我的库存适配图纸");
     setCompletedColors([]);
@@ -2642,7 +2743,7 @@ export default function Home() {
               <button className={`upload-zone ${uploadedImage ? "has-image" : ""}`} onClick={() => fileRef.current?.click()}>
                 {uploadedImage ? <img src={uploadedImage} alt="已上传的参考图片" /> : <><span className="upload-icon">↥</span><b>上传一张照片或插画</b><small>支持 JPG、PNG，建议主体清晰</small><em>选择图片</em></>}
               </button>
-              {uploadedImage && <button className="change-image" onClick={() => fileRef.current?.click()}>更换图片</button>}
+              {uploadedImage && <div className="image-review-actions"><button className="change-image" disabled={!cropSource} onClick={() => setShowImageCropper(true)}>✂ 重新裁剪</button><button className="change-image" onClick={() => fileRef.current?.click()}>更换图片</button></div>}
             </div>
             <div className="settings-panel panel">
               <div className="setting-block size-setting">
@@ -2963,6 +3064,12 @@ export default function Home() {
             </div>
             <footer className="shopping-footer batch-footer"><button onClick={() => setShowBatchReplace(false)}>取消</button><button className="receive-list" onClick={applyBatchReplacements} disabled={!resolvedBatchReplacements.length}>应用 {resolvedBatchReplacements.length} 个替换</button></footer>
           </section>
+        </div>
+      )}
+
+      {showImageCropper && cropSource && (
+        <div className="crop-backdrop" onPointerDown={() => setShowImageCropper(false)}>
+          <ImageCropper source={cropSource} onCancel={() => setShowImageCropper(false)} onApply={(image) => acceptUploadedImage(image, true)} onUseOriginal={() => acceptUploadedImage(cropSource, false)} />
         </div>
       )}
 

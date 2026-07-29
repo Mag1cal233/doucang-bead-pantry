@@ -70,6 +70,10 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(page, /yilihua-inventory-preferences-v1/);
   assert.match(page, /添加库存色号/);
   assert.match(page, /preferredColors\.has/);
+  assert.match(page, /function ImageCropper/);
+  assert.match(page, /裁出要拼的主体/);
+  assert.match(page, /canvas\.toDataURL\("image\/png"\)/);
+  assert.match(page, /重新裁剪/);
   assert.match(page, /const metricsByPlan = useMemo/);
   assert.match(page, /const recommendedPlan = useMemo<Strategy>/);
   assert.match(page, /已按本次图片与当前库存实时计算/);
@@ -89,6 +93,8 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(css, /\.touch-zoom-viewport\s*\{/);
   assert.match(css, /\.inventory-adder-grid\s*\{/);
   assert.match(css, /\.table-row\.is-preferred/);
+  assert.match(css, /\.crop-viewport\s*\{/);
+  assert.match(css, /touch-action:\s*none/);
   assert.match(css, /@media \(max-width: 620px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(layout, /一粒画｜把喜欢，一粒粒拼出来/);
