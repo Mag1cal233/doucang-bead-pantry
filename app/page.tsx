@@ -720,6 +720,7 @@ export default function Home() {
   const [replacementBrand, setReplacementBrand] = useState<ReplacementBrand>("MARD");
   const [replacementPreview, setReplacementPreview] = useState<ReplacementPreview | null>(null);
   const [replacementHistory, setReplacementHistory] = useState<ReplacementHistoryItem[]>([]);
+  const [speckleMaxSize, setSpeckleMaxSize] = useState(2);
   const [showShoppingList, setShowShoppingList] = useState(false);
   const [selectedPurchaseKeys, setSelectedPurchaseKeys] = useState<string[]>([]);
   const [showBatchReplace, setShowBatchReplace] = useState(false);
@@ -1227,9 +1228,9 @@ export default function Home() {
       flash("请先生成一张图纸");
       return;
     }
-    const cleaned = removeSpeckles(selectedPattern, craftSize);
+    const cleaned = removeSpeckles(selectedPattern, craftSize, speckleMaxSize);
     if (!cleaned.changed) {
-      flash("当前图纸没有需要清理的 1–2 格杂色");
+      flash(`当前图纸没有需要清理的 1–${speckleMaxSize} 格杂色块`);
       return;
     }
     setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: "一键去杂色", toCode: `${cleaned.changed} 格` }]);
@@ -1237,7 +1238,7 @@ export default function Home() {
     setHighlight(null);
     setReplacementPreview(null);
     setProjectCompleted(false);
-    flash(`已清理 ${cleaned.changed} 格孤立杂色，可随时撤销`);
+    flash(`已清理 ${cleaned.changed} 格孤立杂色（色块上限 ${speckleMaxSize} 格），可随时撤销`);
   }
 
   function applyReplacement() {
@@ -1600,7 +1601,7 @@ export default function Home() {
         <div className="page craft-page">
           <section className="craft-top">
             <div><span className="step-tag">03 · 制作模式</span><h1>{projectDisplayTitle}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}{activeProjectId && <span className="autosave-state"> · ✓ 已自动保存</span>}</p></div>
-            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary despeckle-action" onClick={applySpeckleCleanup} disabled={!generatedPatterns}>✦ 一键去杂色</button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, projectDisplayTitle); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
+            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><div className={`speckle-tool ${speckleMaxSize > 6 ? "risky" : ""}`} title="数值越大，清理力度越强；高光、眼睛等小细节也可能被合并"><label><span>杂色块上限</span><input aria-label="要去除的最大杂色色块格数" type="number" min="1" max="20" value={speckleMaxSize} onChange={(event) => setSpeckleMaxSize(Math.max(1, Math.min(20, Number(event.target.value) || 1)))} /><em>格</em></label><button className="secondary despeckle-action" onClick={applySpeckleCleanup} disabled={!generatedPatterns}>✦ 一键去杂色（≤{speckleMaxSize}格）</button></div><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, projectDisplayTitle); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
