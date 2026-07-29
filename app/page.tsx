@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, CSSProperties, useEffect, useMemo, useRef, useState } from "react";
-import { crossBrandColors } from "./brand-colors";
+import { crossBrandColors, type CrossBrandName } from "./brand-colors";
 import { mardColors, mardSeries } from "./mard-colors";
 
 type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
@@ -13,7 +13,7 @@ type ColorShift = "original" | "warm" | "cool" | "bright" | "soft";
 type UsageItem = { brand: string; code: string; color: string; count: number; name: string };
 type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
 type ReplacementScope = "all" | "section";
-type ReplacementBrand = "MARD" | "Artkal" | "Perler" | "Hama";
+type ReplacementBrand = "MARD" | CrossBrandName;
 type ReplacementPreview = { fromBrand: string; fromCode: string; brand: string; toCode: string; color: string; name: string; label: string };
 type ReplacementHistoryItem = { plan: Strategy; cells: GeneratedCell[]; fromCode: string; toCode: string };
 type SavedProject = {
@@ -47,25 +47,23 @@ const swatches: Swatch[] = [
 
 const brandCatalog = [
   { name: "MARD", origin: "国内常用", series: "5 mm · 2.6 mm", coverage: "标准 221 + 扩展系列", state: "已建档", tone: "#536d58" },
-  { name: "Artkal", origin: "国际品牌", series: "S · C · A · R · M", coverage: "S-5mm 199 项开源参考色", state: "已建档", tone: "#cb7d5a" },
-  { name: "Perler", origin: "国际品牌", series: "Classic · Mini · Caps", coverage: "Classic 5mm 103 项开源参考色", state: "已建档", tone: "#d5a13b" },
-  { name: "Hama", origin: "国际品牌", series: "Mini · Midi · Maxi · Bio", coverage: "Midi 5mm 92 项开源参考色", state: "已建档", tone: "#739a9c" },
-  { name: "Nabbi", origin: "国际品牌", series: "Midi · Mini", coverage: "常用色与透明系列", state: "校准中", tone: "#8c779d" },
-  { name: "Yant", origin: "国内常用", series: "5 mm · 2.6 mm", coverage: "基础与扩展色板", state: "校准中", tone: "#b66b70" },
+  { name: "Artkal", origin: "国际品牌", series: "A · C · M · R · S", coverage: "5 个常用系列 · 781 项开源参考色", state: "已建档", tone: "#cb7d5a" },
+  { name: "Perler", origin: "国际品牌", series: "Classic · Mini · Caps", coverage: "3 个系列 · 170 项开源参考色", state: "已建档", tone: "#d5a13b" },
+  { name: "Hama", origin: "国际品牌", series: "Mini · Midi · Maxi", coverage: "3 个系列 · 195 项开源参考色", state: "已建档", tone: "#739a9c" },
+  { name: "Nabbi", origin: "国际品牌", series: "Midi 5 mm", coverage: "30 项开源参考色", state: "已建档", tone: "#8c779d" },
+  { name: "Yant", origin: "国内常用", series: "5 mm", coverage: "119 项开源参考色", state: "已建档", tone: "#b66b70" },
+  { name: "PhotoPearls", origin: "国际品牌", series: "5 mm", coverage: "官方 1–42 色号 · 屏幕色待校准", state: "色号资料", tone: "#6888a0" },
   { name: "COCO 可可", origin: "国内常用", series: "5 mm · 2.6 mm", coverage: "常用套装与单色", state: "待复核", tone: "#9c745c" },
   { name: "漫漫", origin: "国内常用", series: "多尺寸", coverage: "常用套装与单色", state: "待复核", tone: "#708c72" },
   { name: "盼盼拼豆", origin: "国内常用", series: "多尺寸", coverage: "常用套装与单色", state: "待复核", tone: "#bf7658" },
   { name: "卡卡家", origin: "国内常用", series: "多尺寸", coverage: "常用套装与单色", state: "待复核", tone: "#687f98" },
 ];
 
-const demoCatalogColors = [
-  ["A1", "#faf4c8"], ["A4", "#fbed56"], ["A6", "#feac4c"], ["A10", "#f77c31"],
-  ["A14", "#fd543d"], ["A19", "#fd7c72"], ["B2", "#63f347"], ["B8", "#1c9c4f"],
-  ["B10", "#95d3c2"], ["B21", "#156a6b"], ["C3", "#86b8e5"], ["C8", "#4977bc"],
-  ["D2", "#7065a8"], ["D7", "#b985ba"], ["E4", "#f09ec1"], ["E9", "#cc587d"],
-  ["F3", "#b98563"], ["F8", "#754631"], ["G2", "#e7dfd0"], ["G7", "#8f8a82"],
-  ["H1", "#f8f5ed"], ["H5", "#272626"], ["M3", "#d8ccb6"], ["M8", "#a69680"],
-] as const;
+const replacementBrands: ReplacementBrand[] = ["MARD", "Artkal", "Perler", "Hama", "Nabbi", "Yant"];
+
+function colorKey(brand: string, code: string) {
+  return `${brand}::${code}`;
+}
 
 const catPattern = [
   "....nn...nn....",
@@ -527,7 +525,81 @@ function applyColorShift(pixel: { r: number; g: number; b: number }, shift: Colo
   return pixel;
 }
 
-async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], colorShift: ColorShift, maxColors: number): Promise<GeneratedCell[]> {
+function removeSpeckles(cells: GeneratedCell[], size: number, maxComponentSize = 2) {
+  let next = cells.map((cell) => cell ? { ...cell } : null);
+  const changedIndexes = new Set<number>();
+  const offsets = [[-1, 0], [1, 0], [0, -1], [0, 1]] as const;
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    const source = next.slice();
+    const visited = new Uint8Array(source.length);
+    let passChanged = 0;
+
+    for (let start = 0; start < source.length; start += 1) {
+      const startCell = source[start];
+      if (!startCell || visited[start]) continue;
+      const sourceKey = colorKey(startCell.brand ?? "MARD", startCell.code);
+      const component: number[] = [];
+      const queue = [start];
+      visited[start] = 1;
+
+      for (let cursor = 0; cursor < queue.length; cursor += 1) {
+        const index = queue[cursor];
+        component.push(index);
+        const row = Math.floor(index / size);
+        const column = index % size;
+        offsets.forEach(([rowOffset, columnOffset]) => {
+          const nextRow = row + rowOffset;
+          const nextColumn = column + columnOffset;
+          if (nextRow < 0 || nextRow >= size || nextColumn < 0 || nextColumn >= size) return;
+          const neighborIndex = nextRow * size + nextColumn;
+          const neighbor = source[neighborIndex];
+          if (!neighbor || visited[neighborIndex] || colorKey(neighbor.brand ?? "MARD", neighbor.code) !== sourceKey) return;
+          visited[neighborIndex] = 1;
+          queue.push(neighborIndex);
+        });
+      }
+
+      if (component.length > maxComponentSize) continue;
+      const componentSet = new Set(component);
+      const neighbors = new Map<string, { cell: NonNullable<GeneratedCell>; touches: number }>();
+      component.forEach((index) => {
+        const row = Math.floor(index / size);
+        const column = index % size;
+        offsets.forEach(([rowOffset, columnOffset]) => {
+          const nextRow = row + rowOffset;
+          const nextColumn = column + columnOffset;
+          if (nextRow < 0 || nextRow >= size || nextColumn < 0 || nextColumn >= size) return;
+          const neighborIndex = nextRow * size + nextColumn;
+          if (componentSet.has(neighborIndex)) return;
+          const neighbor = source[neighborIndex];
+          if (!neighbor) return;
+          const key = colorKey(neighbor.brand ?? "MARD", neighbor.code);
+          const current = neighbors.get(key);
+          neighbors.set(key, { cell: neighbor, touches: (current?.touches ?? 0) + 1 });
+        });
+      });
+
+      const target = [...neighbors.values()].sort((a, b) => {
+        if (b.touches !== a.touches) return b.touches - a.touches;
+        return perceptualDistance(hexToRgb(startCell.color), hexToRgb(a.cell.color)) - perceptualDistance(hexToRgb(startCell.color), hexToRgb(b.cell.color));
+      })[0]?.cell;
+      if (!target) continue;
+
+      component.forEach((index) => {
+        next[index] = { ...target };
+        changedIndexes.add(index);
+        passChanged += 1;
+      });
+    }
+
+    if (!passChanged) break;
+  }
+
+  return { cells: next, changed: changedIndexes.size };
+}
+
+async function generatePattern(imageUrl: string, size: number, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], colorShift: ColorShift, maxColors: number, selectedColorKeys: string[]): Promise<GeneratedCell[]> {
   const image = new Image();
   image.src = imageUrl;
   await image.decode();
@@ -547,19 +619,27 @@ async function generatePattern(imageUrl: string, size: number, strategy: Strateg
   context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
 
   const data = context.getImageData(0, 0, size, size).data;
-  const stockColors = inventory.map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
-  const fullColors = mardColors.map((item) => ({ brand: "MARD", code: item.code, color: item.hex, name: "MARD 公开参考色", count: 0, safe: 0, limit: Infinity }));
+  const allowedColors = new Set(selectedColorKeys);
+  const stockColors = inventory
+    .filter((item) => !allowedColors.size || allowedColors.has(colorKey(item.brand, item.code)))
+    .map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
+  const fullColors = allowedColors.size
+    ? stockColors.map((item) => ({ ...item, limit: Infinity }))
+    : mardColors.map((item) => ({ brand: "MARD", code: item.code, color: item.hex, name: "MARD 公开参考色", count: 0, safe: 0, limit: Infinity }));
   let palette = strategy === "quality"
     ? fullColors
     : strategy === "balance"
       ? stockColors.map((item) => ({ ...item, limit: ignoreStock ? Infinity : item.limit + 35 }))
       : stockColors;
 
+  if (!palette.length) throw new Error("没有可用于生成图纸的颜色");
+
   const pixels = Array.from({ length: size * size }, (_, index) => {
     const offset = index * 4;
     return data[offset + 3] < 32 ? null : applyColorShift({ r: data[offset], g: data[offset + 1], b: data[offset + 2] }, colorShift);
   });
-  if (palette.length > maxColors) {
+  const colorLimit = Math.max(3, Math.min(264, maxColors));
+  if (palette.length > colorLimit) {
     const nearestHits = palette.map((_, paletteIndex) => ({ paletteIndex, count: 0 }));
     pixels.forEach((pixel) => {
       if (!pixel) return;
@@ -574,7 +654,7 @@ async function generatePattern(imageUrl: string, size: number, strategy: Strateg
       });
       nearestHits[bestIndex].count += 1;
     });
-    const selectedIndexes = new Set(nearestHits.sort((a, b) => b.count - a.count).slice(0, maxColors).map((item) => item.paletteIndex));
+    const selectedIndexes = new Set(nearestHits.sort((a, b) => b.count - a.count).slice(0, colorLimit).map((item) => item.paletteIndex));
     palette = palette.filter((_, paletteIndex) => selectedIndexes.has(paletteIndex));
   }
   const candidates = pixels.map((pixel) => pixel
@@ -619,6 +699,8 @@ export default function Home() {
   const [ignoreStock, setIgnoreStock] = useState(false);
   const [gridSize, setGridSize] = useState(29);
   const [maxColors, setMaxColors] = useState(12);
+  const [selectedColorKeys, setSelectedColorKeys] = useState<string[]>([]);
+  const [showColorPicker, setShowColorPicker] = useState(false);
   const [generatedPatterns, setGeneratedPatterns] = useState<GeneratedPatterns | null>(null);
   const [patternView, setPatternView] = useState<PatternView>("chart");
   const [chartZoom, setChartZoom] = useState(1);
@@ -713,6 +795,14 @@ export default function Home() {
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
+  const activeSelectedColorKeys = useMemo(() => {
+    const inventoryKeys = new Set(inventory.map((item) => colorKey(item.brand, item.code)));
+    return selectedColorKeys.filter((key) => inventoryKeys.has(key));
+  }, [inventory, selectedColorKeys]);
+  const selectedGenerationColors = useMemo(() => {
+    const selectedKeys = new Set(activeSelectedColorKeys);
+    return inventory.filter((item) => selectedKeys.has(colorKey(item.brand, item.code)));
+  }, [activeSelectedColorKeys, inventory]);
   const lowStockCount = useMemo(() => inventory.filter((item) => item.count < item.safe * 4).length, [inventory]);
   const progress = Math.round((completedColors.length / 5) * 100);
   const selectedPattern = generatedPatterns?.[selectedPlan] ?? null;
@@ -859,7 +949,7 @@ export default function Home() {
     ? mardColors.map((item) => ({ code: item.code, name: "MARD 参考色", color: item.hex, series: item.series, range: item.range, confidence: item.confidence }))
     : selectedCrossBrandColors.length
       ? selectedCrossBrandColors.map((item) => ({ code: item.code, name: item.name, color: item.hex, series: item.series, range: "base" as const, confidence: "open-reference" as const }))
-      : demoCatalogColors.map(([code, color]) => ({ code, name: code, color, series: code.replace(/\d/g, ""), range: "base" as const, confidence: "reference" as const }));
+      : [];
   const catalogSeriesOptions = selectedBrand === "MARD" ? mardSeries : [...new Set(catalogSource.map((item) => item.series))];
   const filteredCatalog = catalogSource.filter((item) => {
     const matchesQuery = !catalogQuery || item.code.toLowerCase().includes(catalogQuery.toLowerCase()) || item.name.toLowerCase().includes(catalogQuery.toLowerCase()) || item.color.toLowerCase().includes(catalogQuery.toLowerCase());
@@ -1127,6 +1217,29 @@ export default function Home() {
     flash(`${selectedBrand} ${code} 已加入库存，默认 100 颗`);
   }
 
+  function toggleGenerationColor(brand: string, code: string) {
+    const key = colorKey(brand, code);
+    setSelectedColorKeys((keys) => keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]);
+  }
+
+  function applySpeckleCleanup() {
+    if (!generatedPatterns || !selectedPattern) {
+      flash("请先生成一张图纸");
+      return;
+    }
+    const cleaned = removeSpeckles(selectedPattern, craftSize);
+    if (!cleaned.changed) {
+      flash("当前图纸没有需要清理的 1–2 格杂色");
+      return;
+    }
+    setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: "一键去杂色", toCode: `${cleaned.changed} 格` }]);
+    setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: cleaned.cells });
+    setHighlight(null);
+    setReplacementPreview(null);
+    setProjectCompleted(false);
+    flash(`已清理 ${cleaned.changed} 格孤立杂色，可随时撤销`);
+  }
+
   function applyReplacement() {
     if (!generatedPatterns || !selectedPattern || !replacementPreview) return;
     const nextCells = selectedPattern.map((cell, index) => {
@@ -1151,7 +1264,7 @@ export default function Home() {
     if (!latest) return;
     setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
     setSelectedPlan(latest.plan);
-    setHighlight(latest.fromCode === "批量换色" ? null : latest.fromCode);
+    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" ? null : latest.fromCode);
     setReplacementPreview(null);
     setReplacementHistory((history) => history.slice(0, -1));
     setProjectCompleted(false);
@@ -1164,12 +1277,16 @@ export default function Home() {
       fileRef.current?.click();
       return;
     }
+    if (activeSelectedColorKeys.length > 0 && activeSelectedColorKeys.length < 3) {
+      flash("指定用色至少选择 3 种，或清空后让系统自动配色");
+      return;
+    }
     setIsGenerating(true);
     try {
       const [zero, balance, quality] = await Promise.all([
-        generatePattern(uploadedImage, gridSize, "zero", ignoreStock, inventory, colorShift, maxColors),
-        generatePattern(uploadedImage, gridSize, "balance", ignoreStock, inventory, colorShift, maxColors),
-        generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory, colorShift, maxColors),
+        generatePattern(uploadedImage, gridSize, "zero", ignoreStock, inventory, colorShift, maxColors, activeSelectedColorKeys),
+        generatePattern(uploadedImage, gridSize, "balance", ignoreStock, inventory, colorShift, maxColors, activeSelectedColorKeys),
+        generatePattern(uploadedImage, gridSize, "quality", ignoreStock, inventory, colorShift, maxColors, activeSelectedColorKeys),
       ]);
       setGeneratedPatterns({ zero, balance, quality });
       setActiveProjectId(`project-${Date.now()}`);
@@ -1344,10 +1461,11 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              {!visibleCatalog.length && <div className="catalog-empty">没有找到匹配色号</div>}
+              {!visibleCatalog.length && <div className="catalog-empty">{selectedBrand === "PhotoPearls" ? "已收录官方 1–42 色号，屏幕参考色仍在校准，暂不开放入库。" : selectedCrossBrandColors.length || selectedBrand === "MARD" ? "没有找到匹配色号" : "该品牌色号正在收集与实物复核中"}</div>}
               <div className="catalog-pagination"><span>第 {activeCatalogPage + 1} / {catalogPageCount} 页 · 共 {filteredCatalog.length} 个色号</span><div><button disabled={activeCatalogPage === 0} onClick={() => setCatalogPage(Math.max(0, activeCatalogPage - 1))}>← 上一页</button><button disabled={activeCatalogPage === catalogPageCount - 1} onClick={() => setCatalogPage(Math.min(catalogPageCount - 1, activeCatalogPage + 1))}>下一页 →</button></div></div>
               {selectedBrand === "MARD" && <div className="catalog-source-note"><b>数据说明</b><span>HEX 仅供屏幕预览，不等于实物测色。289 项参考自 <a href="https://www.pixel-beads.com/mard-bead-color-chart" target="_blank" rel="noreferrer">PixelBeads 色卡</a>；公开列表缺少的 T2、T3 由 <a href="https://heybead.com/bead-colors" target="_blank" rel="noreferrer">HeyBead</a> 交叉补充，等待实物复核。</span></div>}
               {selectedCrossBrandColors.length > 0 && <div className="catalog-source-note"><b>数据说明</b><span>{selectedBrand} 的色号、名称与 RGB 参考自 MIT 开源项目 <a href="https://github.com/maxcleme/beadcolors" target="_blank" rel="noreferrer">BeadColors</a>。HEX 仅用于屏幕近似匹配，不代表品牌官方实物测色；不同批次、屏幕和光线均可能产生色差。</span></div>}
+              {selectedBrand === "PhotoPearls" && <div className="catalog-source-note"><b>数据说明</b><span>已依据 <a href="https://www.photopearls.com/color-chart/" target="_blank" rel="noreferrer">PhotoPearls 官方色卡</a>记录 1–42 色号。官方页面未提供可直接用于算法的 RGB 数据，因此暂不虚构屏幕色，等待实物测色后开放匹配。</span></div>}
             </div>
           </section>
 
@@ -1399,11 +1517,33 @@ export default function Home() {
               </div></div>
               <div className="setting-block color-count-setting">
                 <label>颜色数量上限 <span>{maxColors} 种</span></label>
-                <p>颜色越少越容易拼，颜色越多越接近原图；生成后仍可逐色替换。</p>
-                <div className="color-count-grid" aria-label="选择图纸使用颜色种类">
-                  {[4, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64].map((count) => <button key={count} className={maxColors === count ? "active" : ""} onClick={() => setMaxColors(count)}>{count}<small>色</small></button>)}
+                <p>可在 3–264 色之间自由调整；颜色越少越容易拼，颜色越多越接近原图。</p>
+                <div className="color-count-control">
+                  <input aria-label="颜色数量上限" type="range" min="3" max="264" value={maxColors} onChange={(event) => setMaxColors(Number(event.target.value))} />
+                  <label><input aria-label="输入颜色数量上限" type="number" min="3" max="264" value={maxColors} onChange={(event) => setMaxColors(Math.max(3, Math.min(264, Number(event.target.value) || 3)))} /><span>色</span></label>
                 </div>
-                {maxColors >= 48 && <p className="color-count-warning">精细配色会产生更多零散色块，更适合大画布或追求还原度的作品。</p>}
+                <div className="color-count-grid" aria-label="选择图纸使用颜色种类">
+                  {[3, 8, 16, 32, 64, 128, 192, 264].map((count) => <button key={count} className={maxColors === count ? "active" : ""} onClick={() => setMaxColors(count)}>{count}<small>色</small></button>)}
+                </div>
+                {maxColors >= 128 && <p className="color-count-warning">超精细配色会产生更多零散色块，建议搭配大画布，并在生成后使用“一键去杂色”。</p>}
+              </div>
+              <div className="setting-block color-selection-setting">
+                <label>指定使用颜色 <span>{selectedGenerationColors.length ? `已选 ${selectedGenerationColors.length} 种` : "自动配色"}</span></label>
+                <p>只让图纸使用你勾选的库存色；不选择时，系统会按策略自动挑色。</p>
+                <button className={`color-picker-trigger ${showColorPicker ? "active" : ""}`} onClick={() => setShowColorPicker(!showColorPicker)}>
+                  <span className="selected-color-preview">{selectedGenerationColors.slice(0, 8).map((item) => <i key={colorKey(item.brand, item.code)} style={{ background: item.color }} />)}{!selectedGenerationColors.length && <i className="auto-palette">∞</i>}</span>
+                  <b>{selectedGenerationColors.length ? `管理已选 ${selectedGenerationColors.length} 种颜色` : "从库存中选择颜色"}</b><em>{showColorPicker ? "收起 ↑" : "展开 ↓"}</em>
+                </button>
+                {showColorPicker && <div className="allowed-color-panel">
+                  <div className="allowed-color-actions"><span>当前库存共 {inventory.length} 个色号</span><div><button onClick={() => setSelectedColorKeys(inventory.map((item) => colorKey(item.brand, item.code)))}>全选库存色</button><button onClick={() => setSelectedColorKeys([])}>恢复自动</button></div></div>
+                  <div className="allowed-color-grid">
+                    {inventory.map((item) => {
+                      const selected = activeSelectedColorKeys.includes(colorKey(item.brand, item.code));
+                      return <button key={colorKey(item.brand, item.code)} className={selected ? "selected" : ""} aria-pressed={selected} onClick={() => toggleGenerationColor(item.brand, item.code)}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand} · {item.count} 颗</small></span><em>{selected ? "✓" : "+"}</em></button>;
+                    })}
+                  </div>
+                  {activeSelectedColorKeys.length > 0 && activeSelectedColorKeys.length < 3 && <p className="color-selection-warning">还需选择 {3 - activeSelectedColorKeys.length} 种颜色才能生成。</p>}
+                </div>}
               </div>
               <div className="setting-block color-shift-setting">
                 <label>色彩偏转 <span>{({ original: "保持原图", warm: "偏暖修正", cool: "偏冷修正", bright: "提亮修正", soft: "柔和修正" } as Record<ColorShift, string>)[colorShift]}</span></label>
@@ -1425,7 +1565,7 @@ export default function Home() {
                 <span><b>无视当前库存</b><small>按完整品牌色库生成，缺豆保留并生成采购清单</small></span>
                 <span className={`toggle ${ignoreStock ? "on" : ""}`}><i /></span>
               </button>
-              <button className="generate-button" onClick={generate} disabled={isGenerating}>{isGenerating ? <><i className="spinner" /> 正在计算全局配色…</> : <>{ignoreStock ? "按完整色库生成图纸" : "生成库存适配图纸"} <span>→</span></>}</button>
+              <button className="generate-button" onClick={generate} disabled={isGenerating}>{isGenerating ? <><i className="spinner" /> 正在计算全局配色…</> : <>{selectedGenerationColors.length ? `按指定 ${selectedGenerationColors.length} 色生成` : ignoreStock ? "按完整色库生成图纸" : "生成库存适配图纸"} <span>→</span></>}</button>
               <p className="privacy-note">图片仅用于本次生成，不会公开到社区</p>
             </div>
           </section>
@@ -1444,13 +1584,13 @@ export default function Home() {
                 <div className="plan-art">{generatedPatterns ? <GeneratedArtwork cells={generatedPatterns[plan.id]} size={gridSize} /> : <BeadArtwork />}</div>
                 <div className="plan-title"><div><h2>{plan.title}</h2><p>{plan.note}</p></div><span className="radio"><i /></span></div>
                 <div className="score-row"><div><span>还原度</span><strong>{plan.match}<small>分</small></strong></div><div><span>库存满足</span><strong>{plan.stock}<small>%</small></strong></div></div>
-                <div className="plan-meta"><span>{generatedPatterns ? new Set(generatedPatterns[plan.id].filter(Boolean).map((cell) => cell?.code)).size : plan.colors} 种颜色</span><span>{plan.time}</span><span className={plan.shortage ? "short" : "enough"}>{ignoreStock ? "生成采购清单" : plan.shortage ? `缺 ${plan.shortage} 颗` : "无需补货"}</span></div>
+                <div className="plan-meta"><span>{generatedPatterns ? new Set(generatedPatterns[plan.id].filter(Boolean).map((cell) => colorKey(cell?.brand ?? "MARD", cell?.code ?? ""))).size : plan.colors} 种颜色</span><span>{plan.time}</span><span className={plan.shortage ? "short" : "enough"}>{ignoreStock ? "生成采购清单" : plan.shortage ? `缺 ${plan.shortage} 颗` : "无需补货"}</span></div>
               </article>
             ))}
           </section>
           <section className="plan-footer panel">
             <div><span>已选择</span><h3>{currentPlan.title}</h3><p>{currentPlan.note}</p></div>
-            <div className="usage-preview">{inventory.slice(0, 5).map((item) => <i key={`${item.brand}-${item.code}`} style={{ background: item.color }} />)}<span>共 {currentPlan.colors} 色</span></div>
+            <div className="usage-preview">{(generatedPatterns ? generatedUsage : inventory.slice(0, 5)).slice(0, 5).map((item) => <i key={`${item.brand}-${item.code}`} style={{ background: item.color }} />)}<span>共 {generatedPatterns ? generatedUsage.length : currentPlan.colors} 色</span></div>
             <button className="primary" onClick={() => { if (gridSize > 58) setPatternView("section"); go("craft"); }}>使用这套图纸 <span>→</span></button>
           </section>
         </div>
@@ -1460,7 +1600,7 @@ export default function Home() {
         <div className="page craft-page">
           <section className="craft-top">
             <div><span className="step-tag">03 · 制作模式</span><h1>{projectDisplayTitle}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}{activeProjectId && <span className="autosave-state"> · ✓ 已自动保存</span>}</p></div>
-            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, projectDisplayTitle); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
+            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><button className="secondary despeckle-action" onClick={applySpeckleCleanup} disabled={!generatedPatterns}>✦ 一键去杂色</button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, projectDisplayTitle); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
@@ -1473,7 +1613,7 @@ export default function Home() {
                     const viewportWidth = overviewViewportRef.current?.clientWidth ?? 720;
                     setOverviewZoom(Math.max(.5, Math.min(3, Math.round(((viewportWidth - 64) / baseSize) * 20) / 20)));
                   }}>适合窗口</button></>}
-                  {replacementHistory.length > 0 && <button onClick={undoReplacement}>↶ 撤销换色</button>}
+                  {replacementHistory.length > 0 && <button onClick={undoReplacement}>↶ 撤销上次操作</button>}
                   <button onClick={() => setChartFocus(!chartFocus)}>{chartFocus ? "退出全屏" : "专注查看"}</button>
                 </div>
               </div>
@@ -1537,7 +1677,7 @@ export default function Home() {
                 <div className="replace-current"><i style={{ background: highlightedUsage.color }} /><span><b>{highlightedUsage.brand} · {highlightedUsage.code}</b><small>当前使用 {highlightedUsage.count} 颗</small></span></div>
                 <div className="replace-scope"><button className={replacementScope === "all" ? "active" : ""} onClick={() => { setReplacementScope("all"); setReplacementPreview(null); }}>整张图</button><button className={replacementScope === "section" ? "active" : ""} onClick={() => { setReplacementScope("section"); setReplacementPreview(null); }}>分区 {String.fromCharCode(65 + activeSectionRow)}{activeSectionColumn + 1}</button><span>替换 {replacementNeeded} 格</span></div>
                 <div className="replace-brand-switch" aria-label="选择替代品牌">
-                  {(["MARD", "Artkal", "Perler", "Hama"] as ReplacementBrand[]).map((brand) => <button key={brand} className={replacementBrand === brand ? "active" : ""} onClick={() => { setReplacementBrand(brand); setReplacementPreview(null); }}><b>{brand}</b><small>{brand === "MARD" ? 291 : crossBrandColors.filter((item) => item.brand === brand).length} 色</small></button>)}
+                  {replacementBrands.map((brand) => <button key={brand} className={replacementBrand === brand ? "active" : ""} onClick={() => { setReplacementBrand(brand); setReplacementPreview(null); }}><b>{brand}</b><small>{brand === "MARD" ? 291 : crossBrandColors.filter((item) => item.brand === brand).length} 色</small></button>)}
                 </div>
                 <div className="replacement-options">
                   {replacementOptions.map((option) => <button key={`${option.brand}-${option.code}`} className={replacementPreview?.brand === option.brand && replacementPreview?.toCode === option.code ? "active" : ""} onClick={() => setReplacementPreview({ fromBrand: highlightedUsage.brand, fromCode: highlightedUsage.code, brand: option.brand, toCode: option.code, color: option.color, name: option.name, label: option.label })}>

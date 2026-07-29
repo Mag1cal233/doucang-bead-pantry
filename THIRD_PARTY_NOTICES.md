@@ -2,7 +2,7 @@
 
 ## BeadColors
 
-The Artkal S-5mm, Perler, and Hama Midi reference palettes in `app/brand-colors.ts` are derived from [maxcleme/beadcolors](https://github.com/maxcleme/beadcolors).
+The Artkal A/C/M/R/S, Perler Classic/Mini/Caps, Hama Mini/Midi/Maxi, Nabbi, and Yant reference palettes in `app/brand-colors.ts` are derived from [maxcleme/beadcolors](https://github.com/maxcleme/beadcolors).
 
 Copyright (c) 2020 maxcleme
 
