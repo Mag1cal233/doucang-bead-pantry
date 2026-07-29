@@ -49,8 +49,10 @@ test("ships the finished product and cell editor without starter artifacts", asy
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /type CellEditTool = "paint" \| "erase" \| "pick" \| "fill"/);
+  assert.match(page, /type CellEditTool = "paint" \| "erase" \| "pick" \| "fill" \| "select"/);
   assert.match(page, /function handleCellEdit/);
+  assert.match(page, /function handleCellStrokeStart/);
+  assert.match(page, /function applyCellSelection/);
   assert.match(page, /function redoReplacement/);
   assert.match(page, /mirrorEdit/);
   assert.match(page, /区域填充/);
@@ -58,6 +60,8 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(page, /editable=\{editMode\}/);
   assert.match(css, /\.cell-editor\s*\{/);
   assert.match(css, /\.chart-cell\.editable/);
+  assert.match(css, /\.cell-selection-actions/);
+  assert.match(css, /\.chart-cell\.selected-cell/);
   assert.match(css, /@media \(max-width: 620px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(layout, /豆仓｜按库存生成清晰拼豆图纸/);

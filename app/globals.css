@@ -430,8 +430,8 @@ button { color: inherit; }
 .cell-editor-tools span { margin-top: 2px; color: var(--muted); font-size: 8px; }
 .cell-editor-tools button { min-height: 34px; padding: 0 12px; border: 1px solid #cfd7cc; border-radius: 9px; background: white; color: #65685f; font-size: 9px; font-weight: 700; cursor: pointer; }
 .cell-editor-tools button.active { border-color: var(--sage); background: var(--sage); color: white; }
-.cell-editor-tools .mirror-toggle { border-style: dashed; }
-.cell-editor-tools .mirror-toggle.active { border-style: solid; background: #dfe9df; color: var(--sage-dark); }
+.cell-editor-tools .mirror-toggle, .cell-editor-tools .continuous-toggle { border-style: dashed; }
+.cell-editor-tools .mirror-toggle.active, .cell-editor-tools .continuous-toggle.active { border-style: solid; background: #dfe9df; color: var(--sage-dark); }
 .cell-editor-palette { margin-top: 10px; padding: 2px 1px 5px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
 .cell-editor-palette button { flex: 0 0 auto; min-width: 70px; min-height: 43px; padding: 5px 7px; display: grid; grid-template-columns: 25px auto; align-items: center; gap: 6px; border: 1px solid #d3d7cf; border-radius: 10px; background: white; color: var(--ink); text-align: left; cursor: pointer; }
 .cell-editor-palette button > i { width: 25px; height: 25px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgba(35,31,27,.16); }
@@ -439,6 +439,12 @@ button { color: inherit; }
 .cell-editor-palette button b { font-family: Arial, sans-serif; font-size: 9px; }
 .cell-editor-palette button small { margin-top: 2px; color: var(--muted); font-size: 6px; }
 .cell-editor-palette button.active { border-color: var(--sage); box-shadow: 0 0 0 2px rgba(83,109,88,.16); }
+.cell-selection-actions { margin-top: 8px; padding: 8px 9px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #cad6c7; border-radius: 10px; background: #e8f0e5; }
+.cell-selection-actions > span { color: var(--sage-dark); font-size: 9px; font-weight: 700; }
+.cell-selection-actions > div { display: flex; gap: 6px; }
+.cell-selection-actions button { min-height: 31px; padding: 0 10px; border: 1px solid #bac7b7; border-radius: 8px; background: white; color: var(--sage-dark); font-size: 8px; font-weight: 700; cursor: pointer; }
+.cell-selection-actions button:first-child { border-color: var(--sage); background: var(--sage); color: white; }
+.cell-selection-actions button:disabled { opacity: .38; cursor: not-allowed; }
 .cell-editor > p { margin: 4px 1px 0; color: #75796f; font-size: 8px; }
 .craft-canvas.chart-focus:has(.cell-editor) .chart-scroll { max-height: calc(100vh - 390px); }
 .chart-stage { padding: 18px; background: #f0eee8; }
@@ -458,8 +464,10 @@ button { color: inherit; }
 .chart-cell.major-x, .chart-axis.major-x { border-right: 2px solid #dfa15f; }
 .chart-cell.major-y, .chart-axis.major-y { border-bottom: 2px solid #dfa15f; }
 .chart-cell.dimmed { opacity: .13; filter: grayscale(.75); }
-.chart-cell.editable { position: relative; cursor: crosshair; touch-action: manipulation; }
+.chart-cell.editable { position: relative; cursor: crosshair; touch-action: manipulation; user-select: none; }
+.chart-cell.editable.drag-editable { touch-action: none; }
 .chart-cell.editable:hover, .chart-cell.editable:focus-visible { z-index: 2; outline: none; box-shadow: inset 0 0 0 3px #4f7658, 0 0 0 1px white; }
+.chart-cell.selected-cell { z-index: 1; box-shadow: inset 0 0 0 3px #2f7046, inset 0 0 0 4px rgba(255,255,255,.75); }
 .pattern-legend { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 7px; }
 .pattern-legend button { min-height: 54px; padding: 8px 10px; border: 1px solid rgba(45,40,35,.12); border-radius: 9px; display: grid; grid-template-columns: auto 1fr; gap: 2px 7px; align-items: center; text-align: left; cursor: pointer; box-shadow: inset 0 1px rgba(255,255,255,.18); }
 .pattern-legend b { font-family: Arial, sans-serif; font-size: 12px; }
@@ -792,6 +800,9 @@ button { color: inherit; }
   .cell-editor-tools > div { flex: 1 0 100%; margin: 0 0 2px; }
   .cell-editor-tools button { flex: 1; padding-inline: 7px; }
   .cell-editor-palette button { min-width: 65px; }
+  .cell-selection-actions { align-items: stretch; flex-direction: column; }
+  .cell-selection-actions > div { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+  .cell-selection-actions button { padding-inline: 5px; }
   .chart-stage { padding: 11px; }
   .chart-title { align-items: flex-start; }
   .chart-title b { font-size: 18px; }

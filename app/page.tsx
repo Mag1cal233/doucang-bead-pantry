@@ -10,7 +10,8 @@ type GeneratedCell = { brand?: string; code: string; color: string; name?: strin
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
 type PatternView = "chart" | "section" | "preview";
 type ColorShift = "original" | "warm" | "cool" | "bright" | "soft";
-type CellEditTool = "paint" | "erase" | "pick" | "fill";
+type CellEditTool = "paint" | "erase" | "pick" | "fill" | "select";
+type CellSelection = { start: number; end: number | null };
 type UsageItem = { brand: string; code: string; color: string; count: number; name: string };
 type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
 type ReplacementScope = "all" | "section";
@@ -69,6 +70,22 @@ function colorKey(brand: string, code: string) {
 function sameGeneratedCell(a: GeneratedCell, b: GeneratedCell) {
   if (!a || !b) return a === b;
   return (a.brand ?? "MARD") === (b.brand ?? "MARD") && a.code === b.code && a.color === b.color;
+}
+
+function rectangleIndexes(start: number, end: number, size: number) {
+  const startRow = Math.floor(start / size);
+  const startColumn = start % size;
+  const endRow = Math.floor(end / size);
+  const endColumn = end % size;
+  const minRow = Math.min(startRow, endRow);
+  const maxRow = Math.max(startRow, endRow);
+  const minColumn = Math.min(startColumn, endColumn);
+  const maxColumn = Math.max(startColumn, endColumn);
+  const indexes: number[] = [];
+  for (let row = minRow; row <= maxRow; row += 1) {
+    for (let column = minColumn; column <= maxColumn; column += 1) indexes.push(row * size + column);
+  }
+  return indexes;
 }
 
 const catPattern = [
@@ -283,8 +300,28 @@ function textColor(background: string) {
   return (r * 299 + g * 587 + b * 114) / 1000 > 154 ? "#27251f" : "#ffffff";
 }
 
-function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn = 0, rowCount = size, columnCount = size, editable = false, onCellEdit }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null; startRow?: number; startColumn?: number; rowCount?: number; columnCount?: number; editable?: boolean; onCellEdit?: (index: number, cell: GeneratedCell) => void }) {
+function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn = 0, rowCount = size, columnCount = size, editable = false, dragEditable = false, selectedIndexes, onCellEdit, onCellStrokeStart, onCellStrokeMove, onCellStrokeEnd }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null; startRow?: number; startColumn?: number; rowCount?: number; columnCount?: number; editable?: boolean; dragEditable?: boolean; selectedIndexes?: Set<number>; onCellEdit?: (index: number, cell: GeneratedCell) => void; onCellStrokeStart?: (index: number, cell: GeneratedCell) => void; onCellStrokeMove?: (index: number, cell: GeneratedCell) => void; onCellStrokeEnd?: () => void }) {
   const cellSize = Math.round(30 * zoom);
+  const draggingRef = useRef(false);
+  const draggedIndexesRef = useRef(new Set<number>());
+  const suppressClickRef = useRef(false);
+
+  useEffect(() => {
+    const finishStroke = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      draggedIndexesRef.current.clear();
+      onCellStrokeEnd?.();
+      window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+    };
+    window.addEventListener("pointerup", finishStroke);
+    window.addEventListener("pointercancel", finishStroke);
+    return () => {
+      window.removeEventListener("pointerup", finishStroke);
+      window.removeEventListener("pointercancel", finishStroke);
+    };
+  }, [onCellStrokeEnd]);
+
   return (
     <div className="chart-scroll" aria-label={`${rowCount}乘${columnCount}高清带色号施工图`}>
       <div className="pattern-chart" style={{ "--chart-cell": `${cellSize}px` } as CSSProperties}>
@@ -307,13 +344,32 @@ function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn 
               const dimmed = Boolean(cell && highlight && cell.code !== highlight);
               return (
                 <span
-                  className={`chart-cell ${(absoluteColumn % 5 === 0) ? "major-x" : ""} ${(absoluteRow % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""} ${editable ? "editable" : ""}`}
+                  className={`chart-cell ${(absoluteColumn % 5 === 0) ? "major-x" : ""} ${(absoluteRow % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""} ${selectedIndexes?.has(cellIndex) ? "selected-cell" : ""} ${editable ? "editable" : ""} ${dragEditable ? "drag-editable" : ""}`}
                   key={column}
                   style={cell ? { background: cell.color, color: textColor(cell.color) } : undefined}
                   title={cell ? `${absoluteRow} 行 ${absoluteColumn} 列 · ${cell.code}${editable ? " · 点击修图" : ""}` : `${absoluteRow} 行 ${absoluteColumn} 列 · 留空${editable ? " · 点击修图" : ""}`}
                   role={editable ? "button" : undefined}
                   tabIndex={editable ? 0 : undefined}
-                  onClick={editable ? () => onCellEdit?.(cellIndex, cell) : undefined}
+                  onPointerDown={editable && dragEditable ? (event) => {
+                    if (event.button !== 0) return;
+                    event.preventDefault();
+                    draggingRef.current = true;
+                    draggedIndexesRef.current = new Set([cellIndex]);
+                    suppressClickRef.current = true;
+                    onCellStrokeStart?.(cellIndex, cell);
+                  } : undefined}
+                  onPointerEnter={editable && dragEditable ? (event) => {
+                    if (!draggingRef.current || event.buttons !== 1 || draggedIndexesRef.current.has(cellIndex)) return;
+                    draggedIndexesRef.current.add(cellIndex);
+                    onCellStrokeMove?.(cellIndex, cell);
+                  } : undefined}
+                  onClick={editable ? () => {
+                    if (suppressClickRef.current) {
+                      suppressClickRef.current = false;
+                      return;
+                    }
+                    onCellEdit?.(cellIndex, cell);
+                  } : undefined}
                   onKeyDown={editable ? (event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
@@ -741,6 +797,8 @@ export default function Home() {
   const [editTool, setEditTool] = useState<CellEditTool>("paint");
   const [editColor, setEditColor] = useState<NonNullable<GeneratedCell> | null>(null);
   const [mirrorEdit, setMirrorEdit] = useState(false);
+  const [continuousEdit, setContinuousEdit] = useState(true);
+  const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
   const [speckleMaxSize, setSpeckleMaxSize] = useState(2);
   const [showShoppingList, setShowShoppingList] = useState(false);
   const [selectedPurchaseKeys, setSelectedPurchaseKeys] = useState<string[]>([]);
@@ -755,6 +813,7 @@ export default function Home() {
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
+  const editStrokeRef = useRef<{ plan: Strategy; original: GeneratedCell[]; working: GeneratedCell[]; nextCell: GeneratedCell; changed: Set<number> } | null>(null);
 
   useEffect(() => {
     try {
@@ -845,6 +904,10 @@ export default function Home() {
   const craftPattern = selectedPattern ?? fallbackPattern;
   const craftSize = selectedPattern ? gridSize : 15;
   const craftUsage = generatedUsage.length ? generatedUsage : fallbackUsage;
+  const selectedEditIndexes = useMemo(() => {
+    if (!cellSelection) return new Set<number>();
+    return new Set(rectangleIndexes(cellSelection.start, cellSelection.end ?? cellSelection.start, craftSize));
+  }, [cellSelection, craftSize]);
   const editPalette = useMemo(() => {
     const colors = new Map<string, UsageItem>();
     craftUsage.forEach((item) => colors.set(colorKey(item.brand, item.code), item));
@@ -1040,6 +1103,8 @@ export default function Home() {
     setReplacementHistory([]);
     setRedoHistory([]);
     setEditMode(false);
+    setCellSelection(null);
+    editStrokeRef.current = null;
     setEditColor(null);
     setActiveProjectId(null);
     setCurrentProjectTitle("我的库存适配图纸");
@@ -1056,6 +1121,8 @@ export default function Home() {
     setReplacementHistory([]);
     setRedoHistory([]);
     setEditMode(false);
+    setCellSelection(null);
+    editStrokeRef.current = null;
     setEditColor(null);
     setPatternView("chart");
     setShowProjects(false);
@@ -1079,6 +1146,8 @@ export default function Home() {
     setReplacementHistory([]);
     setRedoHistory([]);
     setEditMode(false);
+    setCellSelection(null);
+    editStrokeRef.current = null;
     setEditColor(null);
     setShowProjects(false);
     go("craft");
@@ -1270,6 +1339,7 @@ export default function Home() {
     }
     const nextMode = !editMode;
     setEditMode(nextMode);
+    if (!nextMode) setCellSelection(null);
     setReplacementPreview(null);
     setHighlight(null);
     if (nextMode) {
@@ -1282,15 +1352,113 @@ export default function Home() {
     }
   }
 
+  function chooseEditTool(tool: CellEditTool) {
+    setEditTool(tool);
+    if (tool !== "select") setCellSelection(null);
+  }
+
+  function currentPaintCell(): GeneratedCell {
+    const fallbackColor = editPalette[0];
+    return editColor ? { ...editColor } : fallbackColor ? { brand: fallbackColor.brand, code: fallbackColor.code, color: fallbackColor.color, name: fallbackColor.name } : null;
+  }
+
+  function applyStrokeIndex(index: number) {
+    const stroke = editStrokeRef.current;
+    if (!stroke) return;
+    const targets = new Set([index]);
+    if (mirrorEdit) {
+      const row = Math.floor(index / craftSize);
+      const column = index % craftSize;
+      targets.add(row * craftSize + (craftSize - 1 - column));
+    }
+    let changed = false;
+    targets.forEach((cellIndex) => {
+      if (sameGeneratedCell(stroke.working[cellIndex], stroke.nextCell)) return;
+      stroke.working[cellIndex] = stroke.nextCell ? { ...stroke.nextCell } : null;
+      stroke.changed.add(cellIndex);
+      changed = true;
+    });
+    if (changed) setGeneratedPatterns((patterns) => patterns ? { ...patterns, [stroke.plan]: [...stroke.working] } : patterns);
+  }
+
+  function handleCellStrokeStart(index: number) {
+    if (!generatedPatterns || !selectedPattern || (editTool !== "paint" && editTool !== "erase")) return;
+    const nextCell = editTool === "erase" ? null : currentPaintCell();
+    if (editTool === "paint" && !nextCell) {
+      flash("请先选择一个画笔颜色");
+      return;
+    }
+    editStrokeRef.current = { plan: selectedPlan, original: selectedPattern, working: [...selectedPattern], nextCell, changed: new Set<number>() };
+    applyStrokeIndex(index);
+  }
+
+  function handleCellStrokeMove(index: number) {
+    applyStrokeIndex(index);
+  }
+
+  function handleCellStrokeEnd() {
+    const stroke = editStrokeRef.current;
+    editStrokeRef.current = null;
+    if (!stroke || !stroke.changed.size) return;
+    setGeneratedPatterns((patterns) => patterns ? { ...patterns, [stroke.plan]: [...stroke.working] } : patterns);
+    setReplacementHistory((history) => [...history.slice(-19), { plan: stroke.plan, cells: stroke.original, fromCode: "连续涂画", toCode: `${stroke.changed.size} 格${mirrorEdit ? "（含左右镜像）" : ""}` }]);
+    setRedoHistory([]);
+    setProjectCompleted(false);
+    flash(`已连续修改 ${stroke.changed.size} 格，可整次撤销`);
+  }
+
+  function applyCellSelection(clear: boolean) {
+    if (!generatedPatterns || !selectedPattern || !cellSelection || cellSelection.end === null) return;
+    const nextCell = clear ? null : currentPaintCell();
+    if (!clear && !nextCell) {
+      flash("请先选择一个填充颜色");
+      return;
+    }
+    const targets = new Set(selectedEditIndexes);
+    if (mirrorEdit) {
+      [...targets].forEach((index) => {
+        const row = Math.floor(index / craftSize);
+        const column = index % craftSize;
+        targets.add(row * craftSize + (craftSize - 1 - column));
+      });
+    }
+    const effectiveIndexes = [...targets].filter((index) => !sameGeneratedCell(selectedPattern[index], nextCell));
+    if (!effectiveIndexes.length) {
+      flash("所选区域已经是这个状态");
+      return;
+    }
+    const nextCells = [...selectedPattern];
+    effectiveIndexes.forEach((index) => { nextCells[index] = nextCell ? { ...nextCell } : null; });
+    const action = clear ? "框选清空" : "框选填色";
+    setReplacementHistory((history) => [...history.slice(-19), { plan: selectedPlan, cells: selectedPattern, fromCode: action, toCode: `${effectiveIndexes.length} 格${mirrorEdit ? "（含左右镜像）" : ""}` }]);
+    setRedoHistory([]);
+    setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
+    setProjectCompleted(false);
+    flash(`已${clear ? "清空" : "填色"} ${effectiveIndexes.length} 格，可整次撤销`);
+  }
+
   function handleCellEdit(index: number, cell: GeneratedCell) {
     if (!generatedPatterns || !selectedPattern) return;
+    if (editTool === "select") {
+      if (!cellSelection || cellSelection.end !== null) {
+        setCellSelection({ start: index, end: null });
+        const row = Math.floor(index / craftSize) + 1;
+        const column = index % craftSize + 1;
+        flash(`已选择起点：${row} 行 ${column} 列，请再点一次确定范围`);
+      } else {
+        const indexes = rectangleIndexes(cellSelection.start, index, craftSize);
+        setCellSelection({ ...cellSelection, end: index });
+        flash(`已框选 ${indexes.length} 格，可批量填色或清空`);
+      }
+      return;
+    }
     if (editTool === "pick") {
       if (!cell) {
         flash("这里是空格，请选择一个有颜色的格子吸取");
         return;
       }
       setEditColor({ ...cell, brand: cell.brand ?? "MARD" });
-      setEditTool("paint");
+      chooseEditTool("paint");
       flash(`已吸取 ${cell.brand ?? "MARD"} ${cell.code}，画笔已就绪`);
       return;
     }
@@ -1394,7 +1562,8 @@ export default function Home() {
     setRedoHistory((history) => [...history.slice(-19), { ...latest, cells: currentCells }]);
     setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
     setSelectedPlan(latest.plan);
-    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" || latest.fromCode === "手动修图" || latest.fromCode === "区域填充" ? null : latest.fromCode);
+    setCellSelection(null);
+    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" || latest.fromCode === "手动修图" || latest.fromCode === "区域填充" || latest.fromCode === "连续涂画" || latest.fromCode === "框选填色" || latest.fromCode === "框选清空" ? null : latest.fromCode);
     setReplacementPreview(null);
     setReplacementHistory((history) => history.slice(0, -1));
     setProjectCompleted(false);
@@ -1408,6 +1577,7 @@ export default function Home() {
     setReplacementHistory((history) => [...history.slice(-19), { ...latest, cells: currentCells }]);
     setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
     setSelectedPlan(latest.plan);
+    setCellSelection(null);
     setHighlight(null);
     setReplacementPreview(null);
     setRedoHistory((history) => history.slice(0, -1));
@@ -1439,6 +1609,8 @@ export default function Home() {
       setReplacementHistory([]);
       setRedoHistory([]);
       setEditMode(false);
+      setCellSelection(null);
+      editStrokeRef.current = null;
       setEditColor(null);
       setSelectedPlan(ignoreStock ? "quality" : strategy);
       go("plans");
@@ -1726,7 +1898,7 @@ export default function Home() {
           {ignoreStock && <div className="ignore-stock-banner"><span>∞</span><div><b>已无视当前库存</b><small>下列方案按完整品牌色库生成；缺少的颜色不会被替换，并会加入采购清单。</small></div><button onClick={() => { setIgnoreStock(false); go("create"); }}>恢复库存约束</button></div>}
           <section className="plan-grid">
             {plans.map((plan) => (
-              <article key={plan.id} className={`plan-card ${selectedPlan === plan.id ? "selected" : ""}`} onClick={() => setSelectedPlan(plan.id)}>
+              <article key={plan.id} className={`plan-card ${selectedPlan === plan.id ? "selected" : ""}`} onClick={() => { setSelectedPlan(plan.id); setCellSelection(null); }}>
                 <div className="plan-badge">{plan.eyebrow}</div>
                 <div className="plan-art">{generatedPatterns ? <GeneratedArtwork cells={generatedPatterns[plan.id]} size={gridSize} /> : <BeadArtwork />}</div>
                 <div className="plan-title"><div><h2>{plan.title}</h2><p>{plan.note}</p></div><span className="radio"><i /></span></div>
@@ -1768,27 +1940,37 @@ export default function Home() {
               </div>
               {editMode && generatedPatterns && <div className="cell-editor" aria-label="格子修图工具">
                 <div className="cell-editor-tools">
-                  <div><b>格子修图</b><span>点击或轻触格子即可精修</span></div>
-                  <button className={editTool === "paint" ? "active" : ""} onClick={() => setEditTool("paint")}>● 画笔</button>
-                  <button className={editTool === "fill" ? "active" : ""} onClick={() => setEditTool("fill")}>▣ 填充</button>
-                  <button className={editTool === "erase" ? "active" : ""} onClick={() => setEditTool("erase")}>◇ 橡皮</button>
-                  <button className={editTool === "pick" ? "active" : ""} onClick={() => setEditTool("pick")}>⌾ 吸管</button>
+                  <div><b>格子修图</b><span>点击、拖动或框选都可以精修</span></div>
+                  <button className={editTool === "paint" ? "active" : ""} onClick={() => chooseEditTool("paint")}>● 画笔</button>
+                  <button className={editTool === "fill" ? "active" : ""} onClick={() => chooseEditTool("fill")}>▣ 填充</button>
+                  <button className={editTool === "erase" ? "active" : ""} onClick={() => chooseEditTool("erase")}>◇ 橡皮</button>
+                  <button className={editTool === "pick" ? "active" : ""} onClick={() => chooseEditTool("pick")}>⌾ 吸管</button>
+                  <button className={editTool === "select" ? "active" : ""} onClick={() => chooseEditTool("select")}>□ 框选</button>
+                  <button className={`continuous-toggle ${continuousEdit ? "active" : ""}`} aria-pressed={continuousEdit} title="开启后按住画笔或橡皮拖动即可连续修改" onClick={() => setContinuousEdit(!continuousEdit)}>〰 连续涂画</button>
                   <button className={`mirror-toggle ${mirrorEdit ? "active" : ""}`} aria-pressed={mirrorEdit} title="开启后每次修改都会同步到左右对称位置" onClick={() => setMirrorEdit(!mirrorEdit)}>↔ 左右对称</button>
                 </div>
                 <div className="cell-editor-palette" aria-label="选择修图颜色">
                   {editPalette.map((item) => {
-                    const active = (editTool === "paint" || editTool === "fill") && editColor?.code === item.code && (editColor.brand ?? "MARD") === item.brand;
-                    return <button key={`${item.brand}-${item.code}`} className={active ? "active" : ""} title={`${item.brand} ${item.code} · ${item.name}`} onClick={() => { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool(editTool === "fill" ? "fill" : "paint"); }}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand}</small></span></button>;
+                    const active = (editTool === "paint" || editTool === "fill" || editTool === "select") && editColor?.code === item.code && (editColor.brand ?? "MARD") === item.brand;
+                    return <button key={`${item.brand}-${item.code}`} className={active ? "active" : ""} title={`${item.brand} ${item.code} · ${item.name}`} onClick={() => { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool(editTool === "fill" || editTool === "select" ? editTool : "paint"); }}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand}</small></span></button>;
                   })}
                 </div>
-                <p>{editTool === "paint" ? `画笔颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}` : editTool === "fill" ? `填充颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}，点击连续同色区域即可整片替换` : editTool === "erase" ? "橡皮会把格子变为空白" : "点一下图纸中的颜色即可吸取"}{mirrorEdit ? " · 左右对称已开启" : ""} · 每次修改都会自动保存，也可以撤销或重做</p>
+                {editTool === "select" && <div className="cell-selection-actions" aria-live="polite">
+                  <span>{!cellSelection ? "先点一个起点，再点一次确定矩形范围" : cellSelection.end === null ? "起点已选，请点击范围的另一角" : `已框选 ${selectedEditIndexes.size} 格`}</span>
+                  <div>
+                    <button disabled={!cellSelection || cellSelection.end === null} onClick={() => applyCellSelection(false)}>用当前颜色填满</button>
+                    <button disabled={!cellSelection || cellSelection.end === null} onClick={() => applyCellSelection(true)}>清空所选格</button>
+                    <button disabled={!cellSelection} onClick={() => setCellSelection(null)}>取消框选</button>
+                  </div>
+                </div>}
+                <p>{editTool === "paint" ? `画笔颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}${continuousEdit ? "，按住拖动可连续涂画" : ""}` : editTool === "fill" ? `填充颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}，点击连续同色区域即可整片替换` : editTool === "erase" ? `橡皮会把格子变为空白${continuousEdit ? "，按住拖动可连续擦除" : ""}` : editTool === "select" ? "框选完成后可用当前颜色填满或一键清空" : "点一下图纸中的颜色即可吸取"}{mirrorEdit ? " · 左右对称已开启" : ""} · 每次修改都会自动保存，也可以撤销或重做</p>
               </div>}
               {patternView === "chart" ? (
                 <div className="chart-stage">
                   <div className="chart-title"><div><b>{projectDisplayTitle}</b><span>{craftSize} × {craftSize} · 每格均标注品牌色号</span></div><em>每 5 格橙色分区</em></div>
-                  <PatternChart cells={displayPattern} size={craftSize} zoom={chartZoom} highlight={replacementPreview ? null : chartHighlight} editable={editMode} onCellEdit={handleCellEdit} />
+                  <PatternChart cells={displayPattern} size={craftSize} zoom={chartZoom} highlight={replacementPreview ? null : chartHighlight} editable={editMode} dragEditable={editMode && continuousEdit && (editTool === "paint" || editTool === "erase")} selectedIndexes={selectedEditIndexes} onCellEdit={handleCellEdit} onCellStrokeStart={handleCellStrokeStart} onCellStrokeMove={handleCellStrokeMove} onCellStrokeEnd={handleCellStrokeEnd} />
                   <div className="pattern-legend" aria-label="图纸颜色用量">
-                    {craftUsage.map((item) => <button key={`${item.brand}-${item.code}`} onClick={() => { setReplacementPreview(null); if (editMode) { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool("paint"); } else { setHighlight(highlight === item.code ? null : item.code); } }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.brand} · {item.name}</span><strong>{editMode ? "设为画笔颜色" : `${item.count} 颗`}</strong></button>)}
+                    {craftUsage.map((item) => <button key={`${item.brand}-${item.code}`} onClick={() => { setReplacementPreview(null); if (editMode) { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool(editTool === "select" ? "select" : "paint"); } else { setHighlight(highlight === item.code ? null : item.code); } }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.brand} · {item.name}</span><strong>{editMode ? "设为修图颜色" : `${item.count} 颗`}</strong></button>)}
                   </div>
                 </div>
               ) : patternView === "section" ? (
@@ -1803,7 +1985,7 @@ export default function Home() {
                     })}
                   </div>
                   <div className="section-chart-wrap">
-                    <PatternChart cells={displayPattern} size={craftSize} zoom={1.45} highlight={replacementPreview ? null : chartHighlight} startRow={sectionStartRow} startColumn={sectionStartColumn} rowCount={sectionHeight} columnCount={sectionWidth} editable={editMode} onCellEdit={handleCellEdit} />
+                    <PatternChart cells={displayPattern} size={craftSize} zoom={1.45} highlight={replacementPreview ? null : chartHighlight} startRow={sectionStartRow} startColumn={sectionStartColumn} rowCount={sectionHeight} columnCount={sectionWidth} editable={editMode} dragEditable={editMode && continuousEdit && (editTool === "paint" || editTool === "erase")} selectedIndexes={selectedEditIndexes} onCellEdit={handleCellEdit} onCellStrokeStart={handleCellStrokeStart} onCellStrokeMove={handleCellStrokeMove} onCellStrokeEnd={handleCellStrokeEnd} />
                   </div>
                   <div className="section-pagination">
                     <button disabled={activeSectionRow === 0 && activeSectionColumn === 0} onClick={() => { const index = activeSectionRow * sectionColumnCount + activeSectionColumn - 1; setSectionRow(Math.floor(index / sectionColumnCount)); setSectionColumn(index % sectionColumnCount); }}>← 上一区</button>
