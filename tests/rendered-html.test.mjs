@@ -74,6 +74,13 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(page, /裁出要拼的主体/);
   assert.match(page, /canvas\.toDataURL\("image\/png"\)/);
   assert.match(page, /重新裁剪/);
+  assert.match(page, /type PortableProjectPackage/);
+  assert.match(page, /function importProjectPackage/);
+  assert.match(page, /navigator\.canShare/);
+  assert.match(page, /\.yilihua/);
+  assert.match(page, /文字消除/);
+  assert.match(page, /crop-erase-mask/);
+  assert.match(page, /globalCompositeOperation = "destination-in"/);
   assert.match(page, /const metricsByPlan = useMemo/);
   assert.match(page, /const recommendedPlan = useMemo<Strategy>/);
   assert.match(page, /已按本次图片与当前库存实时计算/);
@@ -95,6 +102,8 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(css, /\.table-row\.is-preferred/);
   assert.match(css, /\.crop-viewport\s*\{/);
   assert.match(css, /touch-action:\s*none/);
+  assert.match(css, /\.crop-editor-mode\s*\{/);
+  assert.match(css, /\.crop-erase-mask\s*\{/);
   assert.match(css, /@media \(max-width: 620px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(layout, /一粒画｜把喜欢，一粒粒拼出来/);

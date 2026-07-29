@@ -41,6 +41,22 @@ type SavedProject = {
   view: PatternView;
   projectCompleted: boolean;
 };
+type PortableProjectPackage = {
+  format: "yilihua-project";
+  version: 1;
+  exportedAt: number;
+  project: SavedProject;
+  inventory: Swatch[];
+  preferredColorKeys: string[];
+};
+type PortableBackupPackage = {
+  format: "yilihua-backup";
+  version: 1;
+  exportedAt: number;
+  projects: SavedProject[];
+  inventory: Swatch[];
+  preferredColorKeys: string[];
+};
 
 const swatches: Swatch[] = [
   { brand: "MARD", code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
@@ -232,6 +248,19 @@ function encodePattern(cells: GeneratedCell[]) {
 
 function decodePattern(project: Pick<SavedProject, "palette" | "grid">): GeneratedCell[] {
   return project.grid.map((paletteIndex) => paletteIndex > 0 ? { ...project.palette[paletteIndex - 1] } : null);
+}
+
+function isPortableProject(value: unknown): value is SavedProject {
+  if (!value || typeof value !== "object") return false;
+  const project = value as Partial<SavedProject>;
+  return typeof project.id === "string"
+    && typeof project.title === "string"
+    && typeof project.size === "number"
+    && project.size >= 1
+    && Array.isArray(project.palette)
+    && Array.isArray(project.grid)
+    && project.grid.length === project.size * project.size
+    && project.grid.every((index) => Number.isInteger(index) && index >= 0 && index <= (project.palette?.length ?? 0));
 }
 
 function createProjectPreview(cells: GeneratedCell[], size: number) {
@@ -1203,6 +1232,11 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
   const [viewportSize, setViewportSize] = useState(420);
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [eraseMode, setEraseMode] = useState(false);
+  const [eraseBrushSize, setEraseBrushSize] = useState(34);
+  const [eraseStrokeCount, setEraseStrokeCount] = useState(0);
+  const eraseMaskRef = useRef<HTMLCanvasElement>(null);
+  const eraseDrawRef = useRef({ active: false });
   const dragRef = useRef({ active: false, x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const baseScale = Math.max(viewportSize / naturalSize.width, viewportSize / naturalSize.height);
   const displayWidth = naturalSize.width * baseScale * zoom;
@@ -1225,12 +1259,59 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
     return () => observer.disconnect();
   }, []);
 
+  function clearEraseMask() {
+    const mask = eraseMaskRef.current;
+    mask?.getContext("2d")?.clearRect(0, 0, mask.width, mask.height);
+    setEraseStrokeCount(0);
+  }
+
+  function drawErase(event: React.PointerEvent<HTMLDivElement>, start: boolean) {
+    const viewport = viewportRef.current;
+    const mask = eraseMaskRef.current;
+    if (!viewport || !mask) return;
+    const rect = viewport.getBoundingClientRect();
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.round(rect.width * ratio));
+    if (mask.width !== width || mask.height !== width) {
+      mask.width = width;
+      mask.height = width;
+    }
+    const context = mask.getContext("2d");
+    if (!context) return;
+    const x = (event.clientX - rect.left) * ratio;
+    const y = (event.clientY - rect.top) * ratio;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.lineWidth = eraseBrushSize * ratio;
+    context.strokeStyle = "rgba(238, 80, 137, .9)";
+    if (start) {
+      context.beginPath();
+      context.moveTo(x, y);
+      context.lineTo(x + .01, y + .01);
+      context.stroke();
+    } else {
+      context.lineTo(x, y);
+      context.stroke();
+    }
+  }
+
   function startDrag(event: React.PointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (eraseMode) {
+      eraseDrawRef.current.active = true;
+      drawErase(event, true);
+      setEraseStrokeCount((count) => count + 1);
+      return;
+    }
+    if (eraseStrokeCount) clearEraseMask();
     dragRef.current = { active: true, x: event.clientX, y: event.clientY, offsetX: clampedOffset.x, offsetY: clampedOffset.y };
   }
 
   function moveDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (eraseMode && eraseDrawRef.current.active) {
+      drawErase(event, false);
+      return;
+    }
     const drag = dragRef.current;
     if (!drag.active) return;
     setOffset(clampOffset({ x: drag.offsetX + event.clientX - drag.x, y: drag.offsetY + event.clientY - drag.y }));
@@ -1238,6 +1319,7 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
 
   function stopDrag() {
     dragRef.current.active = false;
+    eraseDrawRef.current.active = false;
   }
 
   async function applyCrop() {
@@ -1257,6 +1339,22 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, outputSize, outputSize);
     context.drawImage(image, ((viewportSize - width) / 2 + clampedOffset.x) * outputScale, ((viewportSize - height) / 2 + clampedOffset.y) * outputScale, width * outputScale, height * outputScale);
+    const mask = eraseMaskRef.current;
+    if (eraseStrokeCount && mask?.width) {
+      const repairCanvas = document.createElement("canvas");
+      repairCanvas.width = outputSize;
+      repairCanvas.height = outputSize;
+      const repairContext = repairCanvas.getContext("2d");
+      if (repairContext) {
+        const expansion = outputSize * .06;
+        repairContext.filter = "blur(24px)";
+        repairContext.drawImage(canvas, -expansion, -expansion, outputSize + expansion * 2, outputSize + expansion * 2);
+        repairContext.filter = "none";
+        repairContext.globalCompositeOperation = "destination-in";
+        repairContext.drawImage(mask, 0, 0, outputSize, outputSize);
+        context.drawImage(repairCanvas, 0, 0);
+      }
+    }
     onApply(canvas.toDataURL("image/png"));
   }
 
@@ -1267,17 +1365,25 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
         <button aria-label="关闭图片裁剪" onClick={onCancel}>×</button>
       </header>
       <div className="crop-workspace">
-        <div className="crop-viewport" ref={viewportRef} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
+        <div className={`crop-viewport ${eraseMode ? "erase-mode" : ""}`} ref={viewportRef} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
           <img src={source} alt="待裁剪图片" draggable={false} onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} style={{ width: `${displayWidth}px`, height: `${displayHeight}px`, transform: `translate(calc(-50% + ${clampedOffset.x}px), calc(-50% + ${clampedOffset.y}px))` }} />
+          <canvas ref={eraseMaskRef} className="crop-erase-mask" aria-hidden="true" />
           <div className="crop-thirds" aria-hidden="true"><i /><i /><i /><i /></div>
-          <span className="crop-hint">拖动调整主体位置</span>
+          <span className="crop-hint">{eraseMode ? "在文字上涂抹，粉色区域会被柔化消除" : "拖动调整主体位置"}</span>
         </div>
         <aside className="crop-controls">
-          <div><span>缩放画面</span><strong>{Math.round(zoom * 100)}%</strong></div>
-          <input aria-label="裁剪图片缩放" type="range" min="1" max="3" step="0.01" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
-          <div className="crop-zoom-presets">{[1, 1.5, 2, 3].map((value) => <button className={Math.abs(zoom - value) < .01 ? "active" : ""} key={value} onClick={() => setZoom(value)}>{value}×</button>)}</div>
-          <button className="crop-reset" onClick={() => { setZoom(1); setOffset({ x: 0, y: 0 }); }}>↺ 恢复居中</button>
-          <div className="crop-note"><span>✦</span><p><b>裁剪不会降低图纸清晰度</b><small>会生成 1400 × 1400 的处理图，足够制作最大画布。</small></p></div>
+          <div className="crop-editor-mode"><button className={!eraseMode ? "active" : ""} onClick={() => setEraseMode(false)}>移动裁剪</button><button className={eraseMode ? "active" : ""} onClick={() => setEraseMode(true)}>文字消除</button></div>
+          {!eraseMode ? <>
+            <div className="crop-control-title"><span>缩放画面</span><strong>{Math.round(zoom * 100)}%</strong></div>
+            <input aria-label="裁剪图片缩放" type="range" min="1" max="3" step="0.01" value={zoom} onChange={(event) => { clearEraseMask(); setZoom(Number(event.target.value)); }} />
+            <div className="crop-zoom-presets">{[1, 1.5, 2, 3].map((value) => <button className={Math.abs(zoom - value) < .01 ? "active" : ""} key={value} onClick={() => { clearEraseMask(); setZoom(value); }}>{value}×</button>)}</div>
+            <button className="crop-reset" onClick={() => { clearEraseMask(); setZoom(1); setOffset({ x: 0, y: 0 }); }}>↺ 恢复居中</button>
+          </> : <div className="crop-erase-controls">
+            <div className="crop-control-title"><span>涂抹大小</span><strong>{eraseBrushSize}px</strong></div>
+            <input aria-label="文字消除涂抹大小" type="range" min="12" max="90" value={eraseBrushSize} onChange={(event) => setEraseBrushSize(Number(event.target.value))} />
+            <button className="crop-reset" disabled={!eraseStrokeCount} onClick={clearEraseMask}>清除涂抹，重新标记</button>
+          </div>}
+          <div className="crop-note"><span>✦</span><p><b>{eraseMode ? "图片只在当前设备处理" : "裁剪不会降低图纸清晰度"}</b><small>{eraseMode ? "适合清理标题、水印和杂字；复杂纹理可加大笔刷多涂一次。" : "会生成 1400 × 1400 的处理图，足够制作最大画布。"}</small></p></div>
         </aside>
       </div>
       <footer className="crop-footer"><button onClick={onUseOriginal}>跳过裁剪，使用原图</button><button className="primary" onClick={applyCrop}>应用裁剪 <span>→</span></button></footer>
@@ -1355,6 +1461,7 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
   const homeFileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
+  const projectPackageFileRef = useRef<HTMLInputElement>(null);
   const editStrokeRef = useRef<{ plan: Strategy; original: GeneratedCell[]; working: GeneratedCell[]; nextCell: GeneratedCell; changed: Set<number> } | null>(null);
   usePinchZoom(overviewViewportRef, overviewZoom, patternView === "preview" ? setOverviewZoom : undefined, .5, 3, 1);
 
@@ -1520,6 +1627,7 @@ export default function Home() {
     return [...colors.values()];
   }, [craftUsage, inventory]);
   const projectDisplayTitle = generatedPatterns ? currentProjectTitle : "橘猫午后";
+  const activeSavedProject = activeProjectId ? savedProjects.find((project) => project.id === activeProjectId) : undefined;
   const purchaseItems = useMemo(() => craftUsage.map((item) => {
     const stock = inventory.find((entry) => entry.brand === item.brand && entry.code === item.code);
     const current = stock?.count ?? 0;
@@ -1794,6 +1902,94 @@ export default function Home() {
     setSavedProjects((projects) => projects.filter((item) => item.id !== id));
     if (activeProjectId === id) setActiveProjectId(null);
     flash("作品已从当前设备删除");
+  }
+
+  function portableFilename(title: string) {
+    return (title.trim() || "一粒画项目").replace(/[\\/:*?"<>|]/g, "-");
+  }
+
+  function projectPackage(project: SavedProject): PortableProjectPackage {
+    return { format: "yilihua-project", version: 1, exportedAt: Date.now(), project, inventory, preferredColorKeys: activePreferredColorKeys };
+  }
+
+  function downloadPortableFile(payload: PortableProjectPackage | PortableBackupPackage, filename: string) {
+    const blob = new Blob([JSON.stringify(payload)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportProjectPackage(project: SavedProject) {
+    downloadPortableFile(projectPackage(project), `${portableFilename(project.title)}.yilihua`);
+    flash("完整项目包已导出，可传到其他设备继续制作");
+  }
+
+  async function shareProjectPackage(project: SavedProject) {
+    const payload = projectPackage(project);
+    const file = new File([JSON.stringify(payload)], `${portableFilename(project.title)}.yilihua`, { type: "application/json" });
+    try {
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ title: project.title, text: "一粒画拼豆项目包", files: [file] });
+        flash("项目包已分享");
+      } else {
+        exportProjectPackage(project);
+      }
+    } catch (error) {
+      if ((error as DOMException)?.name !== "AbortError") flash("分享未完成，已保留项目供再次操作");
+    }
+  }
+
+  function exportAllProjects() {
+    const payload: PortableBackupPackage = { format: "yilihua-backup", version: 1, exportedAt: Date.now(), projects: savedProjects, inventory, preferredColorKeys: activePreferredColorKeys };
+    downloadPortableFile(payload, `一粒画完整备份-${new Date().toISOString().slice(0, 10)}.yilihua`);
+    flash(`已备份 ${savedProjects.length} 个作品和全部库存`);
+  }
+
+  async function importProjectPackage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as { format?: string; version?: number; project?: unknown; projects?: unknown; inventory?: unknown; preferredColorKeys?: unknown };
+      if (parsed.version !== 1 || (parsed.format !== "yilihua-project" && parsed.format !== "yilihua-backup")) throw new Error("format");
+      const incomingProjects: unknown[] = parsed.format === "yilihua-project" ? [parsed.project] : Array.isArray(parsed.projects) ? parsed.projects : [];
+      const validProjects = incomingProjects.filter(isPortableProject);
+      if (!validProjects.length) throw new Error("project");
+      const now = Date.now();
+      const normalizedProjects = validProjects.map((project, index) => ({
+        ...project,
+        id: `project-${now}-${index}`,
+        createdAt: project.createdAt || now,
+        updatedAt: now,
+        completedColors: Array.isArray(project.completedColors) ? project.completedColors : [],
+        view: project.view ?? (project.size > 58 ? "section" : "chart"),
+        projectCompleted: Boolean(project.projectCompleted),
+      }));
+      setSavedProjects((projects) => [...normalizedProjects, ...projects].slice(0, 5));
+      const incomingInventory = Array.isArray(parsed.inventory) ? parsed.inventory.filter((item): item is Swatch => item && typeof item === "object" && typeof item.brand === "string" && typeof item.code === "string" && typeof item.name === "string" && typeof item.color === "string" && /^#[0-9a-f]{6}$/i.test(item.color) && Number.isFinite(item.count) && Number.isFinite(item.safe)) : [];
+      setInventory((items) => {
+        const next = items.map((item) => ({ ...item }));
+        incomingInventory.forEach((incoming) => {
+          const existing = next.find((item) => colorKey(item.brand, item.code) === colorKey(incoming.brand, incoming.code));
+          if (existing) {
+            existing.count = Math.max(existing.count, Math.max(0, Math.round(incoming.count)));
+            existing.safe = Math.max(existing.safe, Math.max(0, Math.round(incoming.safe)));
+          } else {
+            next.push({ ...incoming, count: Math.max(0, Math.round(incoming.count)), safe: Math.max(0, Math.round(incoming.safe)) });
+          }
+        });
+        return next;
+      });
+      const incomingPreferences = Array.isArray(parsed.preferredColorKeys) ? parsed.preferredColorKeys.filter((key): key is string => typeof key === "string") : [];
+      setPreferredColorKeys((keys) => [...new Set([...keys, ...incomingPreferences])]);
+      flash(`已导入 ${normalizedProjects.length} 个作品，库存色号已安全合并`);
+    } catch {
+      flash("项目包无法读取，请选择由一粒画导出的 .yilihua 文件");
+    } finally {
+      event.target.value = "";
+    }
   }
 
   function adjustInventory(brand: string, code: string, change: number) {
@@ -2867,7 +3063,7 @@ export default function Home() {
           <div className="page craft-page workflow-content">
           <section className="craft-top">
             <div><span className="step-tag">{projectCompleted ? "05 · 导出制作" : "04 · 精修图纸"}</span><h1>{projectDisplayTitle}</h1><p>{currentPlan.title} · {generatedPatterns ? `${gridSize} × ${gridSize} · ${selectedPattern?.filter(Boolean).length ?? 0} 颗` : "15 × 15 · 225 颗"}{activeProjectId && <span className="autosave-state"> · ✓ 已自动保存</span>}</p></div>
-            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><div className={`speckle-tool ${speckleMaxSize > 6 ? "risky" : ""}`} title="数值越大，清理力度越强；高光、眼睛等小细节也可能被合并"><label><span>杂色块上限</span><input aria-label="要去除的最大杂色色块格数" type="number" min="1" max="20" value={speckleMaxSize} onChange={(event) => setSpeckleMaxSize(Math.max(1, Math.min(20, Number(event.target.value) || 1)))} /><em>格</em></label><button className="secondary despeckle-action" onClick={applySpeckleCleanup} disabled={!generatedPatterns}>✦ 一键去杂色（≤{speckleMaxSize}格）</button></div><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, projectDisplayTitle); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
+            <div className="craft-actions"><button className="shopping-action" onClick={openShoppingList}>采购清单 <span>{purchaseItems.length}</span></button><div className={`speckle-tool ${speckleMaxSize > 6 ? "risky" : ""}`} title="数值越大，清理力度越强；高光、眼睛等小细节也可能被合并"><label><span>杂色块上限</span><input aria-label="要去除的最大杂色色块格数" type="number" min="1" max="20" value={speckleMaxSize} onChange={(event) => setSpeckleMaxSize(Math.max(1, Math.min(20, Number(event.target.value) || 1)))} /><em>格</em></label><button className="secondary despeckle-action" onClick={applySpeckleCleanup} disabled={!generatedPatterns}>✦ 一键去杂色（≤{speckleMaxSize}格）</button></div><button className="secondary" disabled={!activeSavedProject} onClick={() => activeSavedProject && shareProjectPackage(activeSavedProject)}>分享项目</button><button className="secondary" onClick={() => window.print()}>打印 / PDF</button><button className="secondary" onClick={() => { downloadPatternPng(craftPattern, craftSize, craftUsage, projectDisplayTitle); flash("高清 PNG 正在下载"); }}>导出高清 PNG</button><button className="primary" disabled={projectCompleted} onClick={finishProject}>{projectCompleted ? "✓ 已完成" : `完成${ignoreStock ? "作品" : "并扣库存"}`}</button></div>
           </section>
           <section className="craft-layout">
             <div className={`craft-canvas panel ${chartFocus ? "chart-focus" : ""}`}>
@@ -3105,10 +3301,10 @@ export default function Home() {
         <div className="shopping-backdrop" onMouseDown={() => setShowProjects(false)}>
           <section className="shopping-dialog projects-dialog" role="dialog" aria-modal="true" aria-labelledby="projects-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="shopping-head">
-              <div><span className="step-tag">仅保存在当前设备</span><h2 id="projects-title">我的作品</h2><p>自动保存最近 5 个图纸，包括换色结果和制作进度。</p></div>
+              <div><span className="step-tag">本机自动保存 · 可跨设备迁移</span><h2 id="projects-title">我的作品</h2><p>自动保存最近 5 个图纸，也能导出项目包到手机或另一台电脑继续制作。</p></div>
               <button aria-label="关闭作品列表" onClick={() => setShowProjects(false)}>×</button>
             </header>
-            <div className="projects-local-note"><span>✓</span><p>无需登录云端；清除浏览器数据或更换设备后，这里的作品不会自动迁移。</p></div>
+            <div className="projects-local-note"><span>⇄</span><p>无需登录云端；导出 .yilihua 项目包即可迁移图纸、进度、库存和优先用色。</p></div>
             <div className="projects-list">
               {savedProjects.length ? savedProjects.map((project) => {
                 const progressValue = project.projectCompleted ? 100 : project.palette.length ? Math.min(100, Math.round((project.completedColors?.length ?? 0) / project.palette.length * 100)) : 0;
@@ -3121,12 +3317,12 @@ export default function Home() {
                       <div className="project-progress"><i style={{ width: `${progressValue}%` }} /><span>{progressValue}%</span></div>
                       <small>更新于 {new Date(project.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
                     </div>
-                    <div className="project-actions"><button onClick={() => restoreProject(project)}>{activeProjectId === project.id ? "返回制作" : "继续制作"}</button><button className="delete" onClick={() => deleteProject(project.id)}>删除</button></div>
+                    <div className="project-actions"><button onClick={() => restoreProject(project)}>{activeProjectId === project.id ? "返回制作" : "继续制作"}</button><button className="share" onClick={() => shareProjectPackage(project)}>分享</button><button className="export" onClick={() => exportProjectPackage(project)}>导出</button><button className="delete" onClick={() => deleteProject(project.id)}>删除</button></div>
                   </article>
                 );
               }) : <div className="projects-empty"><span>▦</span><h3>还没有保存的作品</h3><p>生成第一张图纸后，系统会自动开始保存。</p></div>}
             </div>
-            <footer className="shopping-footer projects-footer"><button onClick={() => setShowProjects(false)}>关闭</button><button className="receive-list" onClick={startNewProject}>＋ 新建作品</button></footer>
+            <footer className="shopping-footer projects-footer"><input ref={projectPackageFileRef} type="file" accept=".yilihua,application/json" hidden onChange={importProjectPackage} /><button onClick={() => projectPackageFileRef.current?.click()}>导入项目包</button><button onClick={exportAllProjects} disabled={!savedProjects.length}>备份全部</button><button className="receive-list" onClick={startNewProject}>＋ 新建作品</button></footer>
           </section>
         </div>
       )}
