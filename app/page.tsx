@@ -10,6 +10,7 @@ type GeneratedCell = { brand?: string; code: string; color: string; name?: strin
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
 type PatternView = "chart" | "section" | "preview";
 type ColorShift = "original" | "warm" | "cool" | "bright" | "soft";
+type CellEditTool = "paint" | "erase" | "pick";
 type UsageItem = { brand: string; code: string; color: string; count: number; name: string };
 type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
 type ReplacementScope = "all" | "section";
@@ -277,7 +278,7 @@ function textColor(background: string) {
   return (r * 299 + g * 587 + b * 114) / 1000 > 154 ? "#27251f" : "#ffffff";
 }
 
-function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn = 0, rowCount = size, columnCount = size }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null; startRow?: number; startColumn?: number; rowCount?: number; columnCount?: number }) {
+function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn = 0, rowCount = size, columnCount = size, editable = false, onCellEdit }: { cells: GeneratedCell[]; size: number; zoom: number; highlight?: string | null; startRow?: number; startColumn?: number; rowCount?: number; columnCount?: number; editable?: boolean; onCellEdit?: (index: number, cell: GeneratedCell) => void }) {
   const cellSize = Math.round(30 * zoom);
   return (
     <div className="chart-scroll" aria-label={`${rowCount}乘${columnCount}高清带色号施工图`}>
@@ -296,14 +297,24 @@ function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn 
             <span className={`chart-axis chart-row-axis ${(absoluteRow % 5 === 0) ? "major-y" : ""}`}>{absoluteRow}</span>
             {Array.from({ length: columnCount }, (_, column) => {
               const absoluteColumn = startColumn + column + 1;
-              const cell = cells[(absoluteRow - 1) * size + absoluteColumn - 1];
+              const cellIndex = (absoluteRow - 1) * size + absoluteColumn - 1;
+              const cell = cells[cellIndex];
               const dimmed = Boolean(cell && highlight && cell.code !== highlight);
               return (
                 <span
-                  className={`chart-cell ${(absoluteColumn % 5 === 0) ? "major-x" : ""} ${(absoluteRow % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""}`}
+                  className={`chart-cell ${(absoluteColumn % 5 === 0) ? "major-x" : ""} ${(absoluteRow % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""} ${editable ? "editable" : ""}`}
                   key={column}
                   style={cell ? { background: cell.color, color: textColor(cell.color) } : undefined}
-                  title={cell ? `${absoluteRow} 行 ${absoluteColumn} 列 · ${cell.code}` : `${absoluteRow} 行 ${absoluteColumn} 列 · 留空`}
+                  title={cell ? `${absoluteRow} 行 ${absoluteColumn} 列 · ${cell.code}${editable ? " · 点击修图" : ""}` : `${absoluteRow} 行 ${absoluteColumn} 列 · 留空${editable ? " · 点击修图" : ""}`}
+                  role={editable ? "button" : undefined}
+                  tabIndex={editable ? 0 : undefined}
+                  onClick={editable ? () => onCellEdit?.(cellIndex, cell) : undefined}
+                  onKeyDown={editable ? (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onCellEdit?.(cellIndex, cell);
+                    }
+                  } : undefined}
                 >
                   {cell?.code}
                 </span>
@@ -720,6 +731,9 @@ export default function Home() {
   const [replacementBrand, setReplacementBrand] = useState<ReplacementBrand>("MARD");
   const [replacementPreview, setReplacementPreview] = useState<ReplacementPreview | null>(null);
   const [replacementHistory, setReplacementHistory] = useState<ReplacementHistoryItem[]>([]);
+  const [editMode, setEditMode] = useState(false);
+  const [editTool, setEditTool] = useState<CellEditTool>("paint");
+  const [editColor, setEditColor] = useState<NonNullable<GeneratedCell> | null>(null);
   const [speckleMaxSize, setSpeckleMaxSize] = useState(2);
   const [showShoppingList, setShowShoppingList] = useState(false);
   const [selectedPurchaseKeys, setSelectedPurchaseKeys] = useState<string[]>([]);
@@ -824,6 +838,15 @@ export default function Home() {
   const craftPattern = selectedPattern ?? fallbackPattern;
   const craftSize = selectedPattern ? gridSize : 15;
   const craftUsage = generatedUsage.length ? generatedUsage : fallbackUsage;
+  const editPalette = useMemo(() => {
+    const colors = new Map<string, UsageItem>();
+    craftUsage.forEach((item) => colors.set(colorKey(item.brand, item.code), item));
+    inventory.forEach((item) => {
+      const key = colorKey(item.brand, item.code);
+      if (!colors.has(key)) colors.set(key, { brand: item.brand, code: item.code, color: item.color, count: 0, name: item.name });
+    });
+    return [...colors.values()];
+  }, [craftUsage, inventory]);
   const projectDisplayTitle = generatedPatterns ? currentProjectTitle : "橘猫午后";
   const purchaseItems = useMemo(() => craftUsage.map((item) => {
     const stock = inventory.find((entry) => entry.brand === item.brand && entry.code === item.code);
@@ -1008,6 +1031,8 @@ export default function Home() {
     setProjectCompleted(false);
     setReplacementPreview(null);
     setReplacementHistory([]);
+    setEditMode(false);
+    setEditColor(null);
     setActiveProjectId(null);
     setCurrentProjectTitle("我的库存适配图纸");
   }
@@ -1021,6 +1046,8 @@ export default function Home() {
     setProjectCompleted(false);
     setReplacementPreview(null);
     setReplacementHistory([]);
+    setEditMode(false);
+    setEditColor(null);
     setPatternView("chart");
     setShowProjects(false);
     go("create");
@@ -1041,6 +1068,8 @@ export default function Home() {
     setActiveProjectId(project.id);
     setReplacementPreview(null);
     setReplacementHistory([]);
+    setEditMode(false);
+    setEditColor(null);
     setShowProjects(false);
     go("craft");
   }
@@ -1223,6 +1252,53 @@ export default function Home() {
     setSelectedColorKeys((keys) => keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]);
   }
 
+  function toggleCellEditor() {
+    if (!generatedPatterns || !selectedPattern) {
+      flash("请先生成一张图纸，再进行格子修图");
+      return;
+    }
+    const nextMode = !editMode;
+    setEditMode(nextMode);
+    setReplacementPreview(null);
+    setHighlight(null);
+    if (nextMode) {
+      if (patternView === "preview") setPatternView("chart");
+      if (!editColor && editPalette[0]) {
+        const first = editPalette[0];
+        setEditColor({ brand: first.brand, code: first.code, color: first.color, name: first.name });
+      }
+      flash("格子修图已开启：可使用画笔、橡皮或吸管");
+    }
+  }
+
+  function handleCellEdit(index: number, cell: GeneratedCell) {
+    if (!generatedPatterns || !selectedPattern) return;
+    if (editTool === "pick") {
+      if (!cell) {
+        flash("这里是空格，请选择一个有颜色的格子吸取");
+        return;
+      }
+      setEditColor({ ...cell, brand: cell.brand ?? "MARD" });
+      setEditTool("paint");
+      flash(`已吸取 ${cell.brand ?? "MARD"} ${cell.code}，画笔已就绪`);
+      return;
+    }
+
+    const fallbackColor = editPalette[0];
+    const paintColor = editColor ?? (fallbackColor ? { brand: fallbackColor.brand, code: fallbackColor.code, color: fallbackColor.color, name: fallbackColor.name } : null);
+    const nextCell: GeneratedCell = editTool === "erase" ? null : paintColor ? { ...paintColor } : cell;
+    const currentBrand = cell?.brand ?? "MARD";
+    const nextBrand = nextCell?.brand ?? "MARD";
+    if ((!cell && !nextCell) || (cell && nextCell && currentBrand === nextBrand && cell.code === nextCell.code && cell.color === nextCell.color)) return;
+
+    const row = Math.floor(index / craftSize) + 1;
+    const column = index % craftSize + 1;
+    const nextCells = selectedPattern.map((item, cellIndex) => cellIndex === index ? nextCell : item);
+    setReplacementHistory((history) => [...history.slice(-19), { plan: selectedPlan, cells: selectedPattern, fromCode: "手动修图", toCode: `${row} 行 ${column} 列` }]);
+    setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
+    setProjectCompleted(false);
+  }
+
   function applySpeckleCleanup() {
     if (!generatedPatterns || !selectedPattern) {
       flash("请先生成一张图纸");
@@ -1265,7 +1341,7 @@ export default function Home() {
     if (!latest) return;
     setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
     setSelectedPlan(latest.plan);
-    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" ? null : latest.fromCode);
+    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" || latest.fromCode === "手动修图" ? null : latest.fromCode);
     setReplacementPreview(null);
     setReplacementHistory((history) => history.slice(0, -1));
     setProjectCompleted(false);
@@ -1294,6 +1370,8 @@ export default function Home() {
       setCurrentProjectTitle(`库存适配图纸 · ${gridSize}×${gridSize}`);
       setReplacementPreview(null);
       setReplacementHistory([]);
+      setEditMode(false);
+      setEditColor(null);
       setSelectedPlan(ignoreStock ? "quality" : strategy);
       go("plans");
     } catch {
@@ -1608,6 +1686,7 @@ export default function Home() {
               <div className="canvas-toolbar">
                 <div className="view-switch"><button className={patternView === "chart" ? "active" : ""} onClick={() => setPatternView("chart")}>完整图纸</button><button className={patternView === "section" ? "active" : ""} onClick={() => setPatternView("section")}>10×10 分区拼</button><button className={patternView === "preview" ? "active" : ""} onClick={() => setPatternView("preview")}>图纸总览</button></div>
                 <div className="chart-tools">
+                  <button className={editMode ? "active edit-toggle" : "edit-toggle"} aria-pressed={editMode} disabled={!generatedPatterns} onClick={toggleCellEditor}>✎ {editMode ? "退出修图" : "格子修图"}</button>
                   {patternView === "chart" && <><button aria-label="缩小图纸" onClick={() => setChartZoom(Math.max(.6, chartZoom - .2))}>−</button><strong>{Math.round(chartZoom * 100)}%</strong><button aria-label="放大图纸" onClick={() => setChartZoom(Math.min(2, chartZoom + .2))}>＋</button></>}
                   {patternView === "preview" && <><button aria-label="缩小总览" disabled={overviewZoom <= .5} onClick={() => setOverviewZoom(Math.max(.5, overviewZoom - .25))}>−</button><strong>{Math.round(overviewZoom * 100)}%</strong><button aria-label="放大总览" disabled={overviewZoom >= 3} onClick={() => setOverviewZoom(Math.min(3, overviewZoom + .25))}>＋</button><button onClick={() => {
                     const baseSize = Math.min(720, Math.max(360, craftSize * 8));
@@ -1618,12 +1697,27 @@ export default function Home() {
                   <button onClick={() => setChartFocus(!chartFocus)}>{chartFocus ? "退出全屏" : "专注查看"}</button>
                 </div>
               </div>
+              {editMode && generatedPatterns && <div className="cell-editor" aria-label="格子修图工具">
+                <div className="cell-editor-tools">
+                  <div><b>格子修图</b><span>点击或轻触格子即可精修</span></div>
+                  <button className={editTool === "paint" ? "active" : ""} onClick={() => setEditTool("paint")}>● 画笔</button>
+                  <button className={editTool === "erase" ? "active" : ""} onClick={() => setEditTool("erase")}>◇ 橡皮</button>
+                  <button className={editTool === "pick" ? "active" : ""} onClick={() => setEditTool("pick")}>⌾ 吸管</button>
+                </div>
+                <div className="cell-editor-palette" aria-label="选择修图颜色">
+                  {editPalette.map((item) => {
+                    const active = editTool === "paint" && editColor?.code === item.code && (editColor.brand ?? "MARD") === item.brand;
+                    return <button key={`${item.brand}-${item.code}`} className={active ? "active" : ""} title={`${item.brand} ${item.code} · ${item.name}`} onClick={() => { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool("paint"); }}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand}</small></span></button>;
+                  })}
+                </div>
+                <p>{editTool === "paint" ? `画笔颜色：${editColor?.brand ?? editPalette[0]?.brand ?? "—"} ${editColor?.code ?? editPalette[0]?.code ?? ""}` : editTool === "erase" ? "橡皮会把格子变为空白" : "点一下图纸中的颜色即可吸取"} · 每次修改都会自动保存，也可以撤销</p>
+              </div>}
               {patternView === "chart" ? (
                 <div className="chart-stage">
                   <div className="chart-title"><div><b>{projectDisplayTitle}</b><span>{craftSize} × {craftSize} · 每格均标注品牌色号</span></div><em>每 5 格橙色分区</em></div>
-                  <PatternChart cells={displayPattern} size={craftSize} zoom={chartZoom} highlight={replacementPreview ? null : chartHighlight} />
+                  <PatternChart cells={displayPattern} size={craftSize} zoom={chartZoom} highlight={replacementPreview ? null : chartHighlight} editable={editMode} onCellEdit={handleCellEdit} />
                   <div className="pattern-legend" aria-label="图纸颜色用量">
-                    {craftUsage.map((item) => <button key={`${item.brand}-${item.code}`} onClick={() => { setReplacementPreview(null); setHighlight(highlight === item.code ? null : item.code); }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.brand} · {item.name}</span><strong>{item.count} 颗</strong></button>)}
+                    {craftUsage.map((item) => <button key={`${item.brand}-${item.code}`} onClick={() => { setReplacementPreview(null); if (editMode) { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool("paint"); } else { setHighlight(highlight === item.code ? null : item.code); } }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.brand} · {item.name}</span><strong>{editMode ? "设为画笔颜色" : `${item.count} 颗`}</strong></button>)}
                   </div>
                 </div>
               ) : patternView === "section" ? (
@@ -1638,7 +1732,7 @@ export default function Home() {
                     })}
                   </div>
                   <div className="section-chart-wrap">
-                    <PatternChart cells={displayPattern} size={craftSize} zoom={1.45} highlight={replacementPreview ? null : chartHighlight} startRow={sectionStartRow} startColumn={sectionStartColumn} rowCount={sectionHeight} columnCount={sectionWidth} />
+                    <PatternChart cells={displayPattern} size={craftSize} zoom={1.45} highlight={replacementPreview ? null : chartHighlight} startRow={sectionStartRow} startColumn={sectionStartColumn} rowCount={sectionHeight} columnCount={sectionWidth} editable={editMode} onCellEdit={handleCellEdit} />
                   </div>
                   <div className="section-pagination">
                     <button disabled={activeSectionRow === 0 && activeSectionColumn === 0} onClick={() => { const index = activeSectionRow * sectionColumnCount + activeSectionColumn - 1; setSectionRow(Math.floor(index / sectionColumnCount)); setSectionColumn(index % sectionColumnCount); }}>← 上一区</button>
@@ -1657,7 +1751,7 @@ export default function Home() {
                   <div className="overview-stats"><span><b>{craftSize} × {craftSize}</b><small>画布尺寸</small></span><span><b>{displayPattern.filter(Boolean).length.toLocaleString()}</b><small>豆子总数</small></span><span><b>{craftUsage.length}</b><small>使用颜色</small></span><span><b>{Math.round(overviewZoom * 100)}%</b><small>当前缩放</small></span></div>
                 </div>
               )}
-              <div className="coordinate-hint">{patternView === "preview" ? "使用上方 − / ＋ 缩放总览；点击右侧颜色可单独高亮该色号" : "可横向、纵向滚动查看；点击右侧颜色可高亮该色号"}</div>
+              <div className="coordinate-hint">{editMode ? "修图模式：点击或轻触格子修改；画笔颜色也可从下方图例直接选择" : patternView === "preview" ? "使用上方 − / ＋ 缩放总览；点击右侧颜色可单独高亮该色号" : "可横向、纵向滚动查看；点击右侧颜色可高亮该色号"}</div>
             </div>
             <aside className="craft-sidebar panel">
               <div className="progress-head"><div><span>制作进度</span><strong>{actualProgress}%</strong></div><div className="progress-track"><i style={{ width: `${actualProgress}%` }} /></div><p>{completedColors.length} / {generatedUsage.length || 5} 个颜色已完成</p></div>
