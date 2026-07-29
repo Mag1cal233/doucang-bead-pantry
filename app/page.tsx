@@ -21,6 +21,7 @@ type UsageItem = { brand: string; code: string; color: string; count: number; na
 type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
 type ReplacementScope = "all" | "section";
 type ReplacementBrand = "MARD" | CrossBrandName;
+type InventoryFilter = "all" | "low" | "preferred";
 type ReplacementPreview = { fromBrand: string; fromCode: string; brand: string; toCode: string; color: string; name: string; label: string };
 type ReplacementHistoryItem = { plan: Strategy; cells: GeneratedCell[]; fromCode: string; toCode: string };
 type SavedProject = {
@@ -994,9 +995,10 @@ async function preparePatternPixels(imageUrl: string, size: number, colorShift: 
   return { pixels, importance: measurePixelImportance(pixels, size) };
 }
 
-function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], maxColors: number, selectedColorKeys: string[]): GeneratedCell[] {
+function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], maxColors: number, selectedColorKeys: string[], preferredColorKeys: string[]): GeneratedCell[] {
   const { pixels, importance } = prepared;
   const allowedColors = new Set(selectedColorKeys);
+  const preferredColors = new Set(preferredColorKeys);
   const stockColors = inventory
     .filter((item) => !allowedColors.size || allowedColors.has(colorKey(item.brand, item.code)))
     .map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
@@ -1014,6 +1016,18 @@ function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ig
   const colorLimit = Math.max(3, Math.min(264, maxColors));
   if (palette.length > colorLimit) {
     const selectedIndexes = selectUsefulPaletteIndexes(pixels, importance, palette.map((item) => hexToRgb(item.color)), colorLimit);
+    const preferredIndexes = palette
+      .map((item, paletteIndex) => ({ paletteIndex, preferred: preferredColors.has(colorKey(item.brand ?? "MARD", item.code)) }))
+      .filter((item) => item.preferred)
+      .slice(0, colorLimit)
+      .map((item) => item.paletteIndex);
+    preferredIndexes.forEach((paletteIndex) => selectedIndexes.add(paletteIndex));
+    if (selectedIndexes.size > colorLimit) {
+      [...selectedIndexes]
+        .filter((paletteIndex) => !preferredIndexes.includes(paletteIndex))
+        .slice(0, selectedIndexes.size - colorLimit)
+        .forEach((paletteIndex) => selectedIndexes.delete(paletteIndex));
+    }
     palette = palette.filter((_, paletteIndex) => selectedIndexes.has(paletteIndex));
   }
   const paletteRgb = palette.map((item) => hexToRgb(item.color));
@@ -1025,7 +1039,12 @@ function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ig
     const key = (pixel.r << 16) | (pixel.g << 8) | pixel.b;
     const cached = candidateCache.get(key);
     if (cached) return cached;
-    const nearest = findNearestPaletteCandidates(pixel, paletteRgb, candidateLimit);
+    const nearest = findNearestPaletteCandidates(pixel, paletteRgb, candidateLimit)
+      .map((candidate) => ({
+        ...candidate,
+        cost: candidate.cost * (preferredColors.has(colorKey(palette[candidate.paletteIndex].brand ?? "MARD", palette[candidate.paletteIndex].code)) ? .88 : 1),
+      }))
+      .sort((a, b) => a.cost - b.cost);
     candidateCache.set(key, nearest);
     return nearest;
   });
@@ -1045,7 +1064,8 @@ function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ig
       let fallbackCost = Infinity;
       paletteRgb.forEach((paletteColor, paletteIndex) => {
         if (remaining[paletteIndex] <= 0) return;
-        const cost = perceptualDistance(pixel, paletteColor);
+        const paletteItem = palette[paletteIndex];
+        const cost = perceptualDistance(pixel, paletteColor) * (preferredColors.has(colorKey(paletteItem.brand ?? "MARD", paletteItem.code)) ? .88 : 1);
         if (cost < fallbackCost) {
           fallbackIndex = paletteIndex;
           fallbackCost = cost;
@@ -1205,6 +1225,14 @@ export default function Home() {
   const [sectionColumn, setSectionColumn] = useState(0);
   const [inventory, setInventory] = useState<Swatch[]>(swatches);
   const [inventoryReady, setInventoryReady] = useState(false);
+  const [inventoryQuery, setInventoryQuery] = useState("");
+  const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>("all");
+  const [preferredColorKeys, setPreferredColorKeys] = useState<string[]>([]);
+  const [showInventoryAdder, setShowInventoryAdder] = useState(false);
+  const [inventoryAdderBrand, setInventoryAdderBrand] = useState<ReplacementBrand>("MARD");
+  const [inventoryAdderQuery, setInventoryAdderQuery] = useState("");
+  const [inventoryAddCount, setInventoryAddCount] = useState(100);
+  const [inventoryAddSafe, setInventoryAddSafe] = useState(20);
   const [projectCompleted, setProjectCompleted] = useState(false);
   const [colorShift, setColorShift] = useState<ColorShift>("original");
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -1265,7 +1293,12 @@ export default function Home() {
       const saved = window.localStorage.getItem("doucang-inventory-v1");
       if (saved) {
         const parsed = JSON.parse(saved) as Swatch[];
-        if (Array.isArray(parsed) && parsed.length) setInventory(parsed);
+        if (Array.isArray(parsed)) setInventory(parsed);
+      }
+      const savedPreferences = window.localStorage.getItem("yilihua-inventory-preferences-v1");
+      if (savedPreferences) {
+        const parsedPreferences = JSON.parse(savedPreferences) as string[];
+        if (Array.isArray(parsedPreferences)) setPreferredColorKeys(parsedPreferences.filter((key) => typeof key === "string"));
       }
     } catch {
       // Keep the safe starter inventory when local data cannot be read.
@@ -1277,7 +1310,8 @@ export default function Home() {
   useEffect(() => {
     if (!inventoryReady) return;
     window.localStorage.setItem("doucang-inventory-v1", JSON.stringify(inventory));
-  }, [inventory, inventoryReady]);
+    window.localStorage.setItem("yilihua-inventory-preferences-v1", JSON.stringify(preferredColorKeys));
+  }, [inventory, inventoryReady, preferredColorKeys]);
 
   useEffect(() => {
     try {
@@ -1308,20 +1342,23 @@ export default function Home() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    if (!showShoppingList && !showBatchReplace && !showProjects) return;
+    if (!showShoppingList && !showBatchReplace && !showProjects && !showInventoryAdder) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShowShoppingList(false);
         setShowBatchReplace(false);
         setShowProjects(false);
+        setShowInventoryAdder(false);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showBatchReplace, showProjects, showShoppingList]);
+  }, [showBatchReplace, showInventoryAdder, showProjects, showShoppingList]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
+  const inventoryKeys = useMemo(() => new Set(inventory.map((item) => colorKey(item.brand, item.code))), [inventory]);
+  const activePreferredColorKeys = useMemo(() => preferredColorKeys.filter((key) => inventoryKeys.has(key)), [inventoryKeys, preferredColorKeys]);
   const activeSelectedColorKeys = useMemo(() => {
     const inventoryKeys = new Set(inventory.map((item) => colorKey(item.brand, item.code)));
     return selectedColorKeys.filter((key) => inventoryKeys.has(key));
@@ -1331,6 +1368,17 @@ export default function Home() {
     return inventory.filter((item) => selectedKeys.has(colorKey(item.brand, item.code)));
   }, [activeSelectedColorKeys, inventory]);
   const lowStockCount = useMemo(() => inventory.filter((item) => item.count < item.safe * 4).length, [inventory]);
+  const filteredInventory = useMemo(() => {
+    const query = inventoryQuery.trim().toLowerCase();
+    const preferred = new Set(activePreferredColorKeys);
+    return inventory.filter((item) => {
+      const matchesQuery = !query || item.code.toLowerCase().includes(query) || item.name.toLowerCase().includes(query) || item.brand.toLowerCase().includes(query) || item.color.toLowerCase().includes(query);
+      const matchesFilter = inventoryFilter === "all"
+        || (inventoryFilter === "low" && item.count < item.safe * 4)
+        || (inventoryFilter === "preferred" && preferred.has(colorKey(item.brand, item.code)));
+      return matchesQuery && matchesFilter;
+    });
+  }, [activePreferredColorKeys, inventory, inventoryFilter, inventoryQuery]);
   const progress = Math.round((completedColors.length / 5) * 100);
   const selectedPattern = generatedPatterns?.[selectedPlan] ?? null;
   const metricsByPlan = useMemo(() => Object.fromEntries(plans.map((plan) => {
@@ -1502,6 +1550,15 @@ export default function Home() {
     });
   }, [craftPattern, craftSize, replacementPreview, replacementScope, sectionHeight, sectionStartColumn, sectionStartRow, sectionWidth]);
   const selectedCrossBrandColors = crossBrandColors.filter((item) => item.brand === selectedBrand);
+  const inventoryAdderCatalog = inventoryAdderBrand === "MARD"
+    ? mardColors.map((item) => ({ brand: "MARD" as const, code: item.code, name: "MARD 参考色", color: item.hex, series: item.series }))
+    : crossBrandColors
+      .filter((item) => item.brand === inventoryAdderBrand)
+      .map((item) => ({ brand: item.brand, code: item.code, name: item.name, color: item.hex, series: item.series }));
+  const visibleInventoryAdderColors = inventoryAdderCatalog.filter((item) => {
+    const query = inventoryAdderQuery.trim().toLowerCase();
+    return !query || item.code.toLowerCase().includes(query) || item.name.toLowerCase().includes(query) || item.color.toLowerCase().includes(query);
+  });
   const catalogSource = selectedBrand === "MARD"
     ? mardColors.map((item) => ({ code: item.code, name: "MARD 参考色", color: item.hex, series: item.series, range: item.range, confidence: item.confidence }))
     : selectedCrossBrandColors.length
@@ -1642,6 +1699,39 @@ export default function Home() {
     setInventory((items) => items.map((item) => item.brand === brand && item.code === code ? { ...item, count: Math.max(0, item.count + change) } : item));
   }
 
+  function setInventoryAmount(brand: string, code: string, field: "count" | "safe", value: number) {
+    const nextValue = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
+    setInventory((items) => items.map((item) => item.brand === brand && item.code === code ? { ...item, [field]: nextValue } : item));
+  }
+
+  function togglePreferredColor(brand: string, code: string) {
+    const key = colorKey(brand, code);
+    setPreferredColorKeys((keys) => keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]);
+  }
+
+  function removeInventoryColor(brand: string, code: string) {
+    const item = inventory.find((entry) => entry.brand === brand && entry.code === code);
+    if (!item || !window.confirm(`从库存中删除 ${brand} ${code}「${item.name}」吗？`)) return;
+    const key = colorKey(brand, code);
+    setInventory((items) => items.filter((entry) => colorKey(entry.brand, entry.code) !== key));
+    setPreferredColorKeys((keys) => keys.filter((entry) => entry !== key));
+    setSelectedColorKeys((keys) => keys.filter((entry) => entry !== key));
+    flash(`${brand} ${code} 已移出库存`);
+  }
+
+  function addInventoryColor(item: { brand: string; code: string; name: string; color: string }) {
+    const count = Math.max(0, Math.round(inventoryAddCount));
+    const safe = Math.max(0, Math.round(inventoryAddSafe));
+    const key = colorKey(item.brand, item.code);
+    const existed = inventoryKeys.has(key);
+    setInventory((items) => {
+      const existing = items.find((entry) => colorKey(entry.brand, entry.code) === key);
+      if (existing) return items.map((entry) => entry === existing ? { ...entry, count: entry.count + count, safe } : entry);
+      return [...items, { ...item, count, safe }];
+    });
+    flash(existed ? `${item.brand} ${item.code} 已增加 ${count} 颗` : `${item.brand} ${item.code} 已加入库存`);
+  }
+
   function exportInventory() {
     const header = "品牌,色号,颜色名称,HEX,数量,安全库存";
     const rows = inventory.map((item) => [item.brand, item.code, item.name, item.color, item.count, item.safe].join(","));
@@ -1667,6 +1757,7 @@ export default function Home() {
       }).filter((item) => item.code && /^#[0-9a-f]{6}$/i.test(item.color) && Number.isFinite(item.count) && Number.isFinite(item.safe));
       if (!imported.length) throw new Error("empty");
       setInventory(imported.map((item) => ({ ...item, count: Math.max(0, Math.round(item.count)), safe: Math.max(0, Math.round(item.safe)) })));
+      setPreferredColorKeys([]);
       setGeneratedPatterns(null);
       setGenerationReference(null);
       flash(`已导入 ${imported.length} 个库存色号`);
@@ -2072,11 +2163,11 @@ export default function Home() {
     try {
       const prepared = await preparePatternPixels(uploadedImage, gridSize, colorShift, imageFit, imageSampling);
       setGenerationReference(prepared);
-      const zero = generatePattern(prepared, "zero", ignoreStock, inventory, maxColors, activeSelectedColorKeys);
+      const zero = generatePattern(prepared, "zero", ignoreStock, inventory, maxColors, activeSelectedColorKeys, activePreferredColorKeys);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      const balance = generatePattern(prepared, "balance", ignoreStock, inventory, maxColors, activeSelectedColorKeys);
+      const balance = generatePattern(prepared, "balance", ignoreStock, inventory, maxColors, activeSelectedColorKeys, activePreferredColorKeys);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      const quality = generatePattern(prepared, "quality", ignoreStock, inventory, maxColors, activeSelectedColorKeys);
+      const quality = generatePattern(prepared, "quality", ignoreStock, inventory, maxColors, activeSelectedColorKeys, activePreferredColorKeys);
       setGeneratedPatterns({ zero, balance, quality });
       setActiveProjectId(`project-${Date.now()}`);
       setCurrentProjectTitle(`库存适配图纸 · ${gridSize}×${gridSize}`);
@@ -2420,32 +2511,34 @@ export default function Home() {
         <div className="page inventory-page">
           <section className="page-title">
             <div><span className="eyebrow">MY BEAD INVENTORY</span><h1>我的库存</h1><p>让库存保持准确，生成的每张图才真正拼得出来。</p></div>
-            <div className="title-actions"><input ref={inventoryFileRef} type="file" accept=".csv,text/csv" hidden onChange={importInventory} /><button className="secondary" onClick={() => inventoryFileRef.current?.click()}>导入 CSV</button><button className="secondary" onClick={exportInventory}>导出库存</button><button className="primary" onClick={() => flash("可先导出 CSV，补充色号后再导入")}>＋ 添加色号</button></div>
+            <div className="title-actions"><input ref={inventoryFileRef} type="file" accept=".csv,text/csv" hidden onChange={importInventory} /><button className="secondary" onClick={() => inventoryFileRef.current?.click()}>导入 CSV</button><button className="secondary" onClick={exportInventory}>导出库存</button><button className="primary" onClick={() => { setInventoryAdderQuery(""); setShowInventoryAdder(true); }}>＋ 添加色号</button></div>
           </section>
           <div className="local-save-note"><span>✓</span><div><b>游客模式 · 已保存在本机</b><small>库存只保存在当前设备；可随时导出 CSV 备份或迁移。</small></div></div>
           <section className="inventory-overview">
-            <div><span>库存总量</span><strong>{totalStock.toLocaleString()}<small> 颗</small></strong><em>较上次作品 -215</em></div>
-            <div><span>已录入色号</span><strong>8<small> 种</small></strong><em>覆盖常用色 72%</em></div>
+            <div><span>库存总量</span><strong>{totalStock.toLocaleString()}<small> 颗</small></strong><em>{inventory.length ? `平均每色 ${Math.round(totalStock / inventory.length)} 颗` : "等待录入库存"}</em></div>
+            <div><span>已录入色号</span><strong>{inventory.length}<small> 种</small></strong><em>{new Set(inventory.map((item) => item.brand)).size} 个品牌</em></div>
             <div><span>低于安全线</span><strong>{lowStockCount}<small> 种</small></strong><em className="warning">需要留意</em></div>
-            <div><span>可直接完成</span><strong>5<small> 张</small></strong><em>来自灵感夹</em></div>
+            <div><span>优先用色</span><strong>{activePreferredColorKeys.length}<small> 种</small></strong><em>生成时优先匹配</em></div>
           </section>
           <section className="panel inventory-table-wrap">
-            <div className="table-toolbar"><div><button className="chip active">全部 {inventory.length}</button><button className="chip">库存偏低 {lowStockCount}</button><button className="chip">优先消耗 1</button></div><label className="search">⌕ <input aria-label="搜索色号" placeholder="搜索色号或颜色" /></label></div>
+            <div className="table-toolbar"><div><button className={`chip ${inventoryFilter === "all" ? "active" : ""}`} onClick={() => setInventoryFilter("all")}>全部 {inventory.length}</button><button className={`chip ${inventoryFilter === "low" ? "active" : ""}`} onClick={() => setInventoryFilter("low")}>库存偏低 {lowStockCount}</button><button className={`chip ${inventoryFilter === "preferred" ? "active" : ""}`} onClick={() => setInventoryFilter("preferred")}>优先使用 {activePreferredColorKeys.length}</button></div><label className="search">⌕ <input aria-label="搜索色号" placeholder="搜索色号、品牌或颜色" value={inventoryQuery} onChange={(event) => setInventoryQuery(event.target.value)} /></label></div>
             <div className="inventory-table">
               <div className="table-row table-header"><span>颜色</span><span>色号</span><span>库存状态</span><span>现有数量</span><span>安全库存</span><span>操作</span></div>
-              {inventory.map((item, index) => {
+              {filteredInventory.map((item) => {
                 const low = item.count < item.safe * 4;
+                const preferred = activePreferredColorKeys.includes(colorKey(item.brand, item.code));
                 return (
-                  <div className="table-row" key={`${item.brand}-${item.code}`}>
+                  <div className={`table-row ${preferred ? "is-preferred" : ""}`} key={`${item.brand}-${item.code}`}>
                     <span className="color-name"><i style={{ background: item.color }} />{item.name}</span>
                     <span><b>{item.code}</b><small>{item.brand}</small></span>
-                    <span><em className={low ? "status low" : "status good"}>{low ? "建议补充" : index === 3 ? "优先消耗" : "充足"}</em></span>
-                    <span className="count-control"><button aria-label={`减少${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, -10)}>−</button><b>{item.count}</b><button aria-label={`增加${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, 10)}>＋</button></span>
-                    <span>{item.safe} 颗</span>
-                    <span><button className="text-button" onClick={() => flash(`${item.code} 已设为生成偏好`)}>设置偏好</button></span>
+                    <span><em className={preferred ? "status preferred" : low ? "status low" : "status good"}>{preferred ? "优先使用" : low ? "建议补充" : "充足"}</em></span>
+                    <span className="count-control"><button aria-label={`减少${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, -10)}>−</button><input aria-label={`${item.brand} ${item.code} 现有数量`} type="number" min="0" value={item.count} onChange={(event) => setInventoryAmount(item.brand, item.code, "count", Number(event.target.value))} /><button aria-label={`增加${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, 10)}>＋</button></span>
+                    <span><input className="stock-number-input" aria-label={`${item.brand} ${item.code} 安全库存`} type="number" min="0" value={item.safe} onChange={(event) => setInventoryAmount(item.brand, item.code, "safe", Number(event.target.value))} /><small>颗</small></span>
+                    <span className="inventory-row-actions"><button className={`text-button ${preferred ? "active" : ""}`} aria-pressed={preferred} onClick={() => togglePreferredColor(item.brand, item.code)}>{preferred ? "取消优先" : "优先使用"}</button><button className="text-button delete" onClick={() => removeInventoryColor(item.brand, item.code)}>删除</button></span>
                   </div>
                 );
               })}
+              {!filteredInventory.length && <div className="inventory-empty"><span>⌕</span><b>{inventory.length ? "没有找到符合条件的色号" : "库存还是空的"}</b><small>{inventory.length ? "换个关键词或切换筛选条件试试" : "点击右上角“添加色号”开始录入"}</small></div>}
             </div>
           </section>
         </div>
@@ -2869,6 +2962,34 @@ export default function Home() {
               )) : <div className="shopping-empty"><span>✓</span><h3>当前没有缺货颜色</h3><p>无需批量替换，可以直接开始制作。</p></div>}
             </div>
             <footer className="shopping-footer batch-footer"><button onClick={() => setShowBatchReplace(false)}>取消</button><button className="receive-list" onClick={applyBatchReplacements} disabled={!resolvedBatchReplacements.length}>应用 {resolvedBatchReplacements.length} 个替换</button></footer>
+          </section>
+        </div>
+      )}
+
+      {showInventoryAdder && (
+        <div className="shopping-backdrop" onMouseDown={() => setShowInventoryAdder(false)}>
+          <section className="shopping-dialog inventory-adder-dialog" role="dialog" aria-modal="true" aria-labelledby="inventory-adder-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="shopping-head">
+              <div><span className="step-tag">从标准色卡录入</span><h2 id="inventory-adder-title">添加库存色号</h2><p>先设定本次录入数量，再点击拥有的颜色；已存在的色号会直接累加。</p></div>
+              <button aria-label="关闭添加色号" onClick={() => setShowInventoryAdder(false)}>×</button>
+            </header>
+            <div className="inventory-add-settings">
+              <label><span>每次加入</span><input aria-label="每次加入库存数量" type="number" min="0" value={inventoryAddCount} onChange={(event) => setInventoryAddCount(Math.max(0, Number(event.target.value) || 0))} /><em>颗</em></label>
+              <label><span>安全预留</span><input aria-label="新色号安全库存" type="number" min="0" value={inventoryAddSafe} onChange={(event) => setInventoryAddSafe(Math.max(0, Number(event.target.value) || 0))} /><em>颗</em></label>
+              <small>安全预留不会被自动分配给新图纸。</small>
+            </div>
+            <div className="inventory-brand-switch" aria-label="选择拼豆品牌">
+              {replacementBrands.map((brand) => <button key={brand} className={inventoryAdderBrand === brand ? "active" : ""} onClick={() => { setInventoryAdderBrand(brand); setInventoryAdderQuery(""); }}>{brand}</button>)}
+            </div>
+            <label className="inventory-adder-search">⌕ <input aria-label="搜索要添加的色号" placeholder={`搜索 ${inventoryAdderBrand} 色号、名称或 HEX`} value={inventoryAdderQuery} onChange={(event) => setInventoryAdderQuery(event.target.value)} /></label>
+            <div className="inventory-adder-grid">
+              {visibleInventoryAdderColors.map((item) => {
+                const existing = inventoryKeys.has(colorKey(item.brand, item.code));
+                return <button className={existing ? "existing" : ""} key={`${item.brand}-${item.code}`} onClick={() => addInventoryColor(item)} title={`${item.brand} ${item.code} · ${item.color}`}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.name}</small></span><em>{existing ? `再加 ${inventoryAddCount}` : "＋ 加入"}</em></button>;
+              })}
+              {!visibleInventoryAdderColors.length && <div className="inventory-adder-empty">没有找到匹配色号</div>}
+            </div>
+            <footer className="shopping-footer inventory-adder-footer"><span>当前库存 {inventory.length} 色 · 共 {totalStock.toLocaleString()} 颗</span><button onClick={() => setShowInventoryAdder(false)}>完成录入</button><button className="receive-list" onClick={() => { setShowInventoryAdder(false); setSelectedBrand(inventoryAdderBrand); setCatalogQuery(""); setCatalogPage(0); go("catalog"); }}>查看完整色卡资料</button></footer>
           </section>
         </div>
       )}

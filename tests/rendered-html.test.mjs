@@ -64,6 +64,12 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(page, /const prepared = await preparePatternPixels/);
   assert.match(page, /remaining\[paletteIndex\] <= 0/);
   assert.match(page, /function calculatePlanMetrics/);
+  assert.match(page, /type InventoryFilter = "all" \| "low" \| "preferred"/);
+  assert.match(page, /function addInventoryColor/);
+  assert.match(page, /function removeInventoryColor/);
+  assert.match(page, /yilihua-inventory-preferences-v1/);
+  assert.match(page, /添加库存色号/);
+  assert.match(page, /preferredColors\.has/);
   assert.match(page, /const metricsByPlan = useMemo/);
   assert.match(page, /const recommendedPlan = useMemo<Strategy>/);
   assert.match(page, /已按本次图片与当前库存实时计算/);
@@ -81,6 +87,8 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(css, /\.cell-selection-actions/);
   assert.match(css, /\.chart-cell\.selected-cell/);
   assert.match(css, /\.touch-zoom-viewport\s*\{/);
+  assert.match(css, /\.inventory-adder-grid\s*\{/);
+  assert.match(css, /\.table-row\.is-preferred/);
   assert.match(css, /@media \(max-width: 620px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(layout, /一粒画｜把喜欢，一粒粒拼出来/);
