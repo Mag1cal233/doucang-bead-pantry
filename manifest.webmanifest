@@ -1,0 +1,21 @@
+{
+  "name": "一粒画｜拼豆创作台",
+  "short_name": "一粒画",
+  "description": "按库存生成清晰拼豆图纸，管理色号、用量和制作进度。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fff7fb",
+  "theme_color": "#ee78a9",
+  "lang": "zh-CN",
+  "categories": ["design", "utilities", "lifestyle"],
+  "icons": [
+    {
+      "src": "./yilihua-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
