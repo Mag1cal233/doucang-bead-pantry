@@ -57,6 +57,70 @@ type PortableBackupPackage = {
   inventory: Swatch[];
   preferredColorKeys: string[];
 };
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+type CreationDraft = {
+  version: 1;
+  image?: string;
+  gridSize: number;
+  maxColors: number;
+  imageFit: ImageFit;
+  imageSampling: ImageSampling;
+  ignoreStock: boolean;
+  colorShift: ColorShift;
+  strategy: Strategy;
+  savedAt: number;
+};
+
+const creationDraftKey = "yilihua-creation-draft-v1";
+const lastBackupKey = "yilihua-last-backup-v1";
+const draftImageDatabase = "yilihua-draft-images-v1";
+
+function openDraftImageDatabase() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = window.indexedDB.open(draftImageDatabase, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains("images")) request.result.createObjectStore("images");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveDraftImage(image: string) {
+  const database = await openDraftImageDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction("images", "readwrite");
+    transaction.objectStore("images").put(image, "current");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  database.close();
+}
+
+async function loadDraftImage() {
+  const database = await openDraftImageDatabase();
+  const image = await new Promise<string | undefined>((resolve, reject) => {
+    const request = database.transaction("images", "readonly").objectStore("images").get("current");
+    request.onsuccess = () => resolve(typeof request.result === "string" ? request.result : undefined);
+    request.onerror = () => reject(request.error);
+  });
+  database.close();
+  return image;
+}
+
+async function clearDraftImage() {
+  const database = await openDraftImageDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction("images", "readwrite");
+    transaction.objectStore("images").delete("current");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  database.close();
+}
 
 const swatches: Swatch[] = [
   { brand: "MARD", code: "M1", name: "奶油白", color: "#f5eddb", count: 386, safe: 80 },
@@ -1235,7 +1299,9 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
   const [eraseMode, setEraseMode] = useState(false);
   const [eraseBrushSize, setEraseBrushSize] = useState(34);
   const [eraseStrokeCount, setEraseStrokeCount] = useState(0);
+  const [showOriginalPreview, setShowOriginalPreview] = useState(false);
   const eraseMaskRef = useRef<HTMLCanvasElement>(null);
+  const eraseHistoryRef = useRef<ImageData[]>([]);
   const eraseDrawRef = useRef({ active: false });
   const dragRef = useRef({ active: false, x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const baseScale = Math.max(viewportSize / naturalSize.width, viewportSize / naturalSize.height);
@@ -1263,6 +1329,35 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
     const mask = eraseMaskRef.current;
     mask?.getContext("2d")?.clearRect(0, 0, mask.width, mask.height);
     setEraseStrokeCount(0);
+    eraseHistoryRef.current = [];
+    setShowOriginalPreview(false);
+  }
+
+  function snapshotEraseMask() {
+    const viewport = viewportRef.current;
+    const mask = eraseMaskRef.current;
+    if (!viewport || !mask) return;
+    const rect = viewport.getBoundingClientRect();
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.round(rect.width * ratio));
+    if (mask.width !== width || mask.height !== width) {
+      mask.width = width;
+      mask.height = width;
+    }
+    const context = mask.getContext("2d");
+    if (!context) return;
+    eraseHistoryRef.current = [...eraseHistoryRef.current.slice(-9), context.getImageData(0, 0, mask.width, mask.height)];
+  }
+
+  function undoEraseMask() {
+    const mask = eraseMaskRef.current;
+    const previous = eraseHistoryRef.current.pop();
+    const context = mask?.getContext("2d");
+    if (!mask || !previous || !context) return;
+    context.clearRect(0, 0, mask.width, mask.height);
+    context.putImageData(previous, 0, 0);
+    setEraseStrokeCount((count) => Math.max(0, count - 1));
+    setShowOriginalPreview(false);
   }
 
   function drawErase(event: React.PointerEvent<HTMLDivElement>, start: boolean) {
@@ -1298,6 +1393,7 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
   function startDrag(event: React.PointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
     if (eraseMode) {
+      snapshotEraseMask();
       eraseDrawRef.current.active = true;
       drawErase(event, true);
       setEraseStrokeCount((count) => count + 1);
@@ -1367,9 +1463,9 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
       <div className="crop-workspace">
         <div className={`crop-viewport ${eraseMode ? "erase-mode" : ""}`} ref={viewportRef} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
           <img src={source} alt="待裁剪图片" draggable={false} onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} style={{ width: `${displayWidth}px`, height: `${displayHeight}px`, transform: `translate(calc(-50% + ${clampedOffset.x}px), calc(-50% + ${clampedOffset.y}px))` }} />
-          <canvas ref={eraseMaskRef} className="crop-erase-mask" aria-hidden="true" />
+          <canvas ref={eraseMaskRef} className={`crop-erase-mask ${showOriginalPreview ? "is-hidden" : ""}`} aria-hidden="true" />
           <div className="crop-thirds" aria-hidden="true"><i /><i /><i /><i /></div>
-          <span className="crop-hint">{eraseMode ? "在文字上涂抹，粉色区域会被柔化消除" : "拖动调整主体位置"}</span>
+          <span className="crop-hint">{eraseMode ? (showOriginalPreview ? "正在查看未处理原图" : "粉色标记处会被柔化消除") : "拖动调整主体位置"}</span>
         </div>
         <aside className="crop-controls">
           <div className="crop-editor-mode"><button className={!eraseMode ? "active" : ""} onClick={() => setEraseMode(false)}>移动裁剪</button><button className={eraseMode ? "active" : ""} onClick={() => setEraseMode(true)}>文字消除</button></div>
@@ -1381,6 +1477,7 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
           </> : <div className="crop-erase-controls">
             <div className="crop-control-title"><span>涂抹大小</span><strong>{eraseBrushSize}px</strong></div>
             <input aria-label="文字消除涂抹大小" type="range" min="12" max="90" value={eraseBrushSize} onChange={(event) => setEraseBrushSize(Number(event.target.value))} />
+            <div className="crop-erase-actions"><button disabled={!eraseStrokeCount} onClick={undoEraseMask}>↶ 撤销一步</button><button disabled={!eraseStrokeCount} className={showOriginalPreview ? "active" : ""} onClick={() => setShowOriginalPreview((visible) => !visible)}>{showOriginalPreview ? "查看标记" : "对照原图"}</button></div>
             <button className="crop-reset" disabled={!eraseStrokeCount} onClick={clearEraseMask}>清除涂抹，重新标记</button>
           </div>}
           <div className="crop-note"><span>✦</span><p><b>{eraseMode ? "图片只在当前设备处理" : "裁剪不会降低图纸清晰度"}</b><small>{eraseMode ? "适合清理标题、水印和杂字；复杂纹理可加大笔刷多涂一次。" : "会生成 1400 × 1400 的处理图，足够制作最大画布。"}</small></p></div>
@@ -1455,11 +1552,21 @@ export default function Home() {
   const [projectsReady, setProjectsReady] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [currentProjectTitle, setCurrentProjectTitle] = useState("我的库存适配图纸");
+  const [draftReady, setDraftReady] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+  const [isStandalone, setIsStandalone] = useState(() => typeof window !== "undefined" && window.matchMedia("(display-mode: standalone)").matches);
+  const [updateWorker, setUpdateWorker] = useState<ServiceWorker | null>(null);
+  const [showDevicePanel, setShowDevicePanel] = useState(false);
+  const [storageUsage, setStorageUsage] = useState(0);
+  const [storageQuota, setStorageQuota] = useState(0);
+  const [lastBackupAt, setLastBackupAt] = useState<number | null>(null);
   const overviewViewportRef = useRef<HTMLDivElement>(null);
   const [showProjects, setShowProjects] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const homeFileRef = useRef<HTMLInputElement>(null);
+  const cameraFileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
   const projectPackageFileRef = useRef<HTMLInputElement>(null);
   const editStrokeRef = useRef<{ plan: Strategy; original: GeneratedCell[]; working: GeneratedCell[]; nextCell: GeneratedCell; changed: Set<number> } | null>(null);
@@ -1534,12 +1641,113 @@ export default function Home() {
   }, [projectsReady, savedProjects]);
 
   useEffect(() => {
+    let legacyImage: string | undefined;
+    try {
+      const savedDraft = window.localStorage.getItem(creationDraftKey);
+      if (savedDraft) {
+        const draft = JSON.parse(savedDraft) as Partial<CreationDraft>;
+        if (draft.version === 1) {
+          if (typeof draft.image === "string" && draft.image.startsWith("data:image/")) legacyImage = draft.image;
+          if (typeof draft.gridSize === "number") setGridSize(Math.max(15, Math.min(116, draft.gridSize)));
+          if (typeof draft.maxColors === "number") setMaxColors(Math.max(3, Math.min(264, draft.maxColors)));
+          if (draft.imageFit === "cover" || draft.imageFit === "contain") setImageFit(draft.imageFit);
+          if (draft.imageSampling === "smooth" || draft.imageSampling === "pixel") setImageSampling(draft.imageSampling);
+          if (typeof draft.ignoreStock === "boolean") setIgnoreStock(draft.ignoreStock);
+          if (["original", "warm", "cool", "bright", "soft"].includes(draft.colorShift ?? "")) setColorShift(draft.colorShift as ColorShift);
+          if (["zero", "balance", "quality"].includes(draft.strategy ?? "")) setStrategy(draft.strategy as Strategy);
+        }
+      }
+      const savedBackupAt = Number(window.localStorage.getItem(lastBackupKey));
+      if (savedBackupAt > 0) setLastBackupAt(savedBackupAt);
+    } catch {
+      // A damaged draft should never prevent a new creation.
+    }
+    loadDraftImage().then((image) => {
+      if (image || legacyImage) setUploadedImage(image ?? legacyImage ?? null);
+    }).catch(() => {
+      if (legacyImage) setUploadedImage(legacyImage);
+    }).finally(() => setDraftReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!draftReady) return;
+    const timer = window.setTimeout(() => {
+      const draft: CreationDraft = {
+        version: 1,
+        gridSize,
+        maxColors,
+        imageFit,
+        imageSampling,
+        ignoreStock,
+        colorShift,
+        strategy,
+        savedAt: Date.now(),
+      };
+      try {
+        window.localStorage.setItem(creationDraftKey, JSON.stringify(draft));
+      } catch {
+        // Generated projects are still saved separately when browser settings storage is unavailable.
+      }
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [colorShift, draftReady, gridSize, ignoreStock, imageFit, imageSampling, maxColors, strategy, uploadedImage]);
+
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    const onInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    const onInstalled = () => {
+      setInstallPrompt(null);
+      setIsStandalone(true);
+      flash("一粒画已添加到主屏幕");
+    };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("beforeinstallprompt", onInstallPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    navigator.storage?.estimate().then((estimate) => {
+      setStorageUsage(estimate.usage ?? 0);
+      setStorageQuota(estimate.quota ?? 0);
+    }).catch(() => undefined);
+
+    let reloading = false;
+    const onControllerChange = () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    };
+    navigator.serviceWorker?.addEventListener("controllerchange", onControllerChange);
+    if ("serviceWorker" in navigator) {
+      const basePath = window.location.pathname.startsWith("/doucang-bead-pantry") ? "/doucang-bead-pantry" : "";
+      navigator.serviceWorker.register(`${basePath}/sw.js`, { scope: `${basePath || ""}/` }).then((registration) => {
+        if (registration.waiting) setUpdateWorker(registration.waiting);
+        registration.addEventListener("updatefound", () => {
+          const worker = registration.installing;
+          worker?.addEventListener("statechange", () => {
+            if (worker.state === "installed" && navigator.serviceWorker.controller) setUpdateWorker(worker);
+          });
+        });
+      }).catch(() => undefined);
+    }
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("beforeinstallprompt", onInstallPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+      navigator.serviceWorker?.removeEventListener("controllerchange", onControllerChange);
+    };
+  }, []);
+
+  useEffect(() => {
     setReplacementPreview(null);
   }, [selectedPlan]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    if (!showShoppingList && !showBatchReplace && !showProjects && !showInventoryAdder && !showImageCropper) return;
+    if (!showShoppingList && !showBatchReplace && !showProjects && !showInventoryAdder && !showImageCropper && !showDevicePanel) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShowShoppingList(false);
@@ -1547,11 +1755,12 @@ export default function Home() {
         setShowProjects(false);
         setShowInventoryAdder(false);
         setShowImageCropper(false);
+        setShowDevicePanel(false);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showBatchReplace, showImageCropper, showInventoryAdder, showProjects, showShoppingList]);
+  }, [showBatchReplace, showDevicePanel, showImageCropper, showInventoryAdder, showProjects, showShoppingList]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
@@ -1810,17 +2019,30 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function prepareImageFile(file: File) {
+    if (!file.type.startsWith("image/")) {
+      flash("请选择照片或图片文件");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setCropSource(reader.result);
+      setShowImageCropper(true);
+    };
+    reader.onerror = () => flash("图片无法读取，请换一张重试");
+    reader.readAsDataURL(file);
+  }
+
   function handleUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    setCropSource(url);
-    setShowImageCropper(true);
+    if (file) prepareImageFile(file);
     event.target.value = "";
   }
 
   function acceptUploadedImage(image: string, cropped: boolean) {
     setUploadedImage(image);
+    if (image.startsWith("data:image/")) saveDraftImage(image).catch(() => flash("图片已载入，但当前浏览器无法长期保存这张大图草稿"));
     setShowImageCropper(false);
     setGeneratedPatterns(null);
     setGenerationReference(null);
@@ -1844,6 +2066,30 @@ export default function Home() {
     go("create");
   }
 
+  function handleCameraUpload(event: ChangeEvent<HTMLInputElement>) {
+    if (!event.target.files?.[0]) return;
+    handleUpload(event);
+    go("create");
+  }
+
+  async function pasteImage() {
+    try {
+      if (!navigator.clipboard?.read) throw new Error("unsupported");
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imageType = item.types.find((type) => type.startsWith("image/"));
+        if (!imageType) continue;
+        const blob = await item.getType(imageType);
+        prepareImageFile(new File([blob], `剪贴板图片.${imageType.split("/")[1] || "png"}`, { type: imageType }));
+        go("create");
+        return;
+      }
+      flash("剪贴板里没有图片");
+    } catch {
+      flash("当前浏览器不能直接读取剪贴板，可长按保存图片后再上传");
+    }
+  }
+
   function startNewProject() {
     setGeneratedPatterns(null);
     setGenerationReference(null);
@@ -1863,6 +2109,12 @@ export default function Home() {
     setEditColor(null);
     setPatternView("chart");
     setShowProjects(false);
+    try {
+      window.localStorage.removeItem(creationDraftKey);
+    } catch {
+      // The new project can still start when storage is unavailable.
+    }
+    clearDraftImage().catch(() => undefined);
     go("create");
   }
 
@@ -1943,8 +2195,15 @@ export default function Home() {
   }
 
   function exportAllProjects() {
-    const payload: PortableBackupPackage = { format: "yilihua-backup", version: 1, exportedAt: Date.now(), projects: savedProjects, inventory, preferredColorKeys: activePreferredColorKeys };
+    const exportedAt = Date.now();
+    const payload: PortableBackupPackage = { format: "yilihua-backup", version: 1, exportedAt, projects: savedProjects, inventory, preferredColorKeys: activePreferredColorKeys };
     downloadPortableFile(payload, `一粒画完整备份-${new Date().toISOString().slice(0, 10)}.yilihua`);
+    setLastBackupAt(exportedAt);
+    try {
+      window.localStorage.setItem(lastBackupKey, String(exportedAt));
+    } catch {
+      // The downloaded backup is still valid when the reminder timestamp cannot be stored.
+    }
     flash(`已备份 ${savedProjects.length} 个作品和全部库存`);
   }
 
@@ -2489,6 +2748,32 @@ export default function Home() {
     window.setTimeout(() => setToast(null), 2400);
   }
 
+  async function installApp() {
+    if (!installPrompt) {
+      flash("请打开浏览器菜单，选择“添加到主屏幕”");
+      return;
+    }
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") setInstallPrompt(null);
+    else flash("安装已取消，之后仍可从设备面板添加");
+  }
+
+  function applyAppUpdate() {
+    updateWorker?.postMessage({ type: "SKIP_WAITING" });
+  }
+
+  async function refreshStorageEstimate() {
+    try {
+      const estimate = await navigator.storage?.estimate();
+      setStorageUsage(estimate?.usage ?? 0);
+      setStorageQuota(estimate?.quota ?? 0);
+      flash("本机存储状态已刷新");
+    } catch {
+      flash("当前浏览器不提供存储用量信息");
+    }
+  }
+
   function dismissSplash() {
     try {
       window.sessionStorage.setItem("bead-studio-splash-v1", "seen");
@@ -2522,6 +2807,7 @@ export default function Home() {
           </div>
         </section>
       )}
+      <input ref={cameraFileRef} type="file" accept="image/*" capture="environment" hidden onChange={handleCameraUpload} />
       <header className={`topbar ${screen === "home" ? "home-topbar" : ""}`}>
         <BrandMark onClick={() => go("home")} />
         <nav className="desktop-nav" aria-label="主导航">
@@ -2534,9 +2820,10 @@ export default function Home() {
         <div className="top-actions">
           <button className="project-pill" onClick={() => setShowProjects(true)}><span>▦</span><b>作品</b><em>{savedProjects.length}</em></button>
           <span className="stock-pill"><i /> {totalStock.toLocaleString()} 颗</span>
-          <button className="avatar" aria-label="个人账户">禾</button>
+          <button className={`device-status-pill ${isOnline ? "is-online" : "is-offline"}`} onClick={() => setShowDevicePanel(true)} aria-label="查看设备存储与安装状态"><i /> <span>{isOnline ? (isStandalone ? "已安装" : "本机") : "离线"}</span></button>
         </div>
       </header>
+      {updateWorker && <div className="app-update-banner" role="status"><span>✦</span><p><b>新版本已经准备好</b><small>刷新后生效，当前草稿不会丢失。</small></p><button onClick={applyAppUpdate}>立即更新</button><button className="dismiss" aria-label="稍后更新" onClick={() => setUpdateWorker(null)}>×</button></div>}
 
       {screen === "home" && (
         <div className="page home-page home-v5 platform-home refined-home cute-home">
@@ -2561,6 +2848,7 @@ export default function Home() {
                   <span><strong>无视库存生成</strong><small>使用完整色库，尽量保留原图颜色</small></span><b>→</b>
                 </button>
               </div>
+              <div className="upload-source-actions home-upload-sources"><span>也可以</span><button onClick={() => { setIgnoreStock(false); cameraFileRef.current?.click(); }}>◎ 直接拍照</button><button onClick={pasteImage}>▣ 粘贴截图</button></div>
               <div className="product-hero-stats">
                 <div><strong>{inventory.length}</strong><span>库存颜色</span></div>
                 <div><strong>{brandCatalog.length}</strong><span>常用品牌</span></div>
@@ -2939,6 +3227,7 @@ export default function Home() {
               <button className={`upload-zone ${uploadedImage ? "has-image" : ""}`} onClick={() => fileRef.current?.click()}>
                 {uploadedImage ? <img src={uploadedImage} alt="已上传的参考图片" /> : <><span className="upload-icon">↥</span><b>上传一张照片或插画</b><small>支持 JPG、PNG，建议主体清晰</small><em>选择图片</em></>}
               </button>
+              <div className="upload-source-actions"><button onClick={() => cameraFileRef.current?.click()}>◎ 拍照</button><button onClick={pasteImage}>▣ 粘贴截图</button><span>{draftReady ? "草稿自动保存" : "正在恢复草稿…"}</span></div>
               {uploadedImage && <div className="image-review-actions"><button className="change-image" disabled={!cropSource} onClick={() => setShowImageCropper(true)}>✂ 重新裁剪</button><button className="change-image" onClick={() => fileRef.current?.click()}>更换图片</button></div>}
             </div>
             <div className="settings-panel panel">
@@ -3323,6 +3612,30 @@ export default function Home() {
               }) : <div className="projects-empty"><span>▦</span><h3>还没有保存的作品</h3><p>生成第一张图纸后，系统会自动开始保存。</p></div>}
             </div>
             <footer className="shopping-footer projects-footer"><input ref={projectPackageFileRef} type="file" accept=".yilihua,application/json" hidden onChange={importProjectPackage} /><button onClick={() => projectPackageFileRef.current?.click()}>导入项目包</button><button onClick={exportAllProjects} disabled={!savedProjects.length}>备份全部</button><button className="receive-list" onClick={startNewProject}>＋ 新建作品</button></footer>
+          </section>
+        </div>
+      )}
+
+      {showDevicePanel && (
+        <div className="shopping-backdrop" onMouseDown={() => setShowDevicePanel(false)}>
+          <section className="shopping-dialog device-dialog" role="dialog" aria-modal="true" aria-labelledby="device-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="shopping-head">
+              <div><span className="step-tag">无需登录 · 数据留在本机</span><h2 id="device-title">一粒画在这台设备上</h2><p>查看离线、安装与存储状态，也可以随时把作品和库存完整备份出来。</p></div>
+              <button aria-label="关闭设备面板" onClick={() => setShowDevicePanel(false)}>×</button>
+            </header>
+            <div className="device-status-grid">
+              <article className={isOnline ? "healthy" : "warning"}><span>{isOnline ? "●" : "○"}</span><div><small>网络状态</small><b>{isOnline ? "在线，可检查更新" : "当前离线，仍可继续使用"}</b></div></article>
+              <article className={isStandalone ? "healthy" : "neutral"}><span>{isStandalone ? "✓" : "＋"}</span><div><small>主屏幕应用</small><b>{isStandalone ? "已经安装" : "还未添加到主屏幕"}</b></div></article>
+              <article className="neutral"><span>▦</span><div><small>本机作品</small><b>{savedProjects.length} 个作品 · {inventory.length} 个库存色</b></div></article>
+              <article className={lastBackupAt && Date.now() - lastBackupAt < 7 * 86400000 ? "healthy" : "warning"}><span>⇩</span><div><small>最近完整备份</small><b>{lastBackupAt ? new Date(lastBackupAt).toLocaleDateString("zh-CN") : "还没有备份"}</b></div></article>
+            </div>
+            <div className="device-storage-card">
+              <div><span><b>浏览器存储</b><small>图片、草稿、图纸和库存都保存在这里</small></span><strong>{storageUsage ? `${(storageUsage / 1048576).toFixed(storageUsage > 10485760 ? 0 : 1)} MB` : "可用"}</strong></div>
+              <i><em style={{ width: `${storageQuota ? Math.max(2, Math.min(100, storageUsage / storageQuota * 100)) : 2}%` }} /></i>
+              <p>{storageQuota ? `本浏览器为网站提供约 ${(storageQuota / 1073741824).toFixed(1)} GB 空间；清理浏览器数据会同时删除本机作品。` : "不同手机分配的空间不同；建议定期下载完整备份。"}</p>
+            </div>
+            {!isStandalone && <div className="device-install-note"><span>⌂</span><p><b>像普通应用一样打开</b><small>{installPrompt ? "添加到主屏幕后，可从手机桌面进入，并支持离线打开。" : "如按钮不可用，请在浏览器菜单选择“添加到主屏幕”。"}</small></p></div>}
+            <footer className="shopping-footer device-footer"><button onClick={refreshStorageEstimate}>刷新状态</button><button onClick={exportAllProjects} disabled={!savedProjects.length}>备份全部</button>{!isStandalone && <button className="receive-list" onClick={installApp}>添加到主屏幕</button>}<button onClick={() => setShowDevicePanel(false)}>完成</button></footer>
           </section>
         </div>
       )}

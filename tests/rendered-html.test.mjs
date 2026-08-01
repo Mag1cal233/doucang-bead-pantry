@@ -112,3 +112,30 @@ test("ships the finished product and cell editor without starter artifacts", asy
 
   assert.deepEqual(await readdir(new URL("app/_sites-preview", templateRoot)), []);
 });
+
+test("ships an installable offline app with mobile image capture and safe local drafts", async () => {
+  const [page, layout, manifestText, serviceWorker] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
+    readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
+  ]);
+  const manifest = JSON.parse(manifestText);
+
+  assert.equal(manifest.name, "一粒画｜拼豆创作台");
+  assert.equal(manifest.display, "standalone");
+  assert.equal(manifest.start_url, "./");
+  assert.match(layout, /rel="manifest" href="\.\/manifest\.webmanifest"/);
+  assert.match(page, /beforeinstallprompt/);
+  assert.match(page, /serviceWorker\.register/);
+  assert.match(page, /navigator\.clipboard\?\.read/);
+  assert.match(page, /capture="environment"/);
+  assert.match(page, /navigator\.storage\?\.estimate/);
+  assert.match(page, /yilihua-creation-draft-v1/);
+  assert.match(page, /一粒画在这台设备上/);
+  assert.match(page, /function undoEraseMask/);
+  assert.match(page, /对照原图/);
+  assert.match(serviceWorker, /yilihua-shell-v1/);
+  assert.match(serviceWorker, /SKIP_WAITING/);
+  assert.match(serviceWorker, /request\.mode === "navigate"/);
+});
