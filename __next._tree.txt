@@ -1,2 +1,2 @@
-:HL["/doucang-bead-pantry/_next/static/chunks/0rgr.fyht9vue.css","style"]
-0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}},"staleTime":300,"buildId":"eSFKn4MNfGGjk3n1I-iN7"}
+:HL["/doucang-bead-pantry/_next/static/chunks/05io-ofp9w4x_.css","style"]
+0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}},"staleTime":300,"buildId":"gsb_AcNHwbS6fU_KPqSDq"}
