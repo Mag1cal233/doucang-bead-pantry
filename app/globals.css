@@ -628,7 +628,13 @@ button { color: inherit; }
 .crop-viewport:active { cursor: grabbing; }
 .crop-viewport.erase-mode { cursor: crosshair; }
 .crop-viewport.erase-mode:active { cursor: crosshair; }
+.crop-viewport.background-mode { cursor: crosshair; }
+.crop-viewport.background-mode:active { cursor: crosshair; }
 .crop-viewport > img { max-width: none; position: absolute; left: 50%; top: 50%; object-fit: fill; pointer-events: none; user-select: none; }
+.crop-viewport > img.crop-source-image { transition: opacity .18s ease; }
+.crop-viewport > img.crop-source-image.is-background-hidden { opacity: 0; }
+.crop-viewport > img.crop-background-preview { width: 100%; height: 100%; max-width: 100%; inset: 0; left: 0; top: 0; z-index: 1; object-fit: fill; transition: opacity .18s ease; }
+.crop-viewport > img.crop-background-preview.is-hidden { opacity: 0; }
 .crop-erase-mask { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; pointer-events: none; opacity: .72; mix-blend-mode: multiply; transition: opacity .16s ease; }
 .crop-erase-mask.is-hidden { opacity: 0; }
 .crop-thirds { position: absolute; inset: 0; z-index: 2; pointer-events: none; box-shadow: inset 0 0 0 2px rgba(255,255,255,.75), inset 0 0 0 3px rgba(75,42,58,.24); }
@@ -641,10 +647,11 @@ button { color: inherit; }
 .crop-thirds i:nth-child(4) { top: 66.666%; }
 .crop-hint { position: absolute; z-index: 3; left: 50%; bottom: 13px; transform: translateX(-50%); padding: 6px 10px; border-radius: 999px; background: rgba(51,35,43,.68); color: #fff; font-size: 8px; white-space: nowrap; pointer-events: none; backdrop-filter: blur(8px); }
 .crop-controls { padding: 18px; border: 1px solid #ead9e2; border-radius: 18px; background: #fff; }
-.crop-editor-mode { margin-bottom: 18px; padding: 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border-radius: 12px; background: #f6edf3; }
+.crop-editor-mode { margin-bottom: 18px; padding: 4px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; border-radius: 12px; background: #f6edf3; }
 .crop-editor-mode button { min-height: 38px; border: 0; border-radius: 9px; background: transparent; color: #8d7180; font-size: 8px; font-weight: 750; cursor: pointer; }
 .crop-editor-mode button.active { background: #fff; color: #b64072; box-shadow: 0 5px 15px rgba(128, 61, 94, .11); }
-.crop-editor-mode button:last-child.active { background: linear-gradient(135deg, #ef6b9f, #c870d2); color: #fff; }
+.crop-editor-mode button:nth-child(2).active { background: linear-gradient(135deg, #ef6b9f, #c870d2); color: #fff; }
+.crop-editor-mode button:nth-child(3).active { background: linear-gradient(135deg, #7a72dc, #58a8c8); color: #fff; }
 .crop-control-title { display: flex; align-items: center; justify-content: space-between; color: #7c6270; font-size: 9px; }
 .crop-control-title strong { color: #b74575; font-size: 14px; }
 .crop-controls input[type="range"] { width: 100%; margin: 18px 0 10px; accent-color: #d35e94; }
@@ -658,6 +665,14 @@ button { color: inherit; }
 .crop-erase-actions button { min-height: 34px; border: 1px solid #e6ccd8; border-radius: 9px; background: #fff; color: #8c6678; font-size: 7px; font-weight: 750; cursor: pointer; }
 .crop-erase-actions button.active { border-color: #ce70a0; background: #f6e9ff; color: #8c4ca2; }
 .crop-erase-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.crop-background-controls { padding: 13px; border: 1px solid #d7d5ef; border-radius: 13px; background: #f7f6ff; }
+.crop-background-controls > .crop-control-title { margin-top: 11px; }
+.crop-background-controls > input[type="range"] { margin-top: 10px; accent-color: #7472cf; }
+.crop-background-status { min-height: 48px; padding: 8px; display: flex; align-items: center; gap: 9px; border-radius: 11px; background: #fff; }
+.crop-background-status > i { flex: 0 0 30px; width: 30px; height: 30px; border: 2px solid #fff; border-radius: 9px; box-shadow: 0 0 0 1px #d9d3e8; }
+.crop-background-status b, .crop-background-status small { display: block; }
+.crop-background-status b { color: #655c8b; font-size: 8px; }
+.crop-background-status small { margin-top: 3px; color: #958dac; font-size: 7px; }
 .crop-note { margin-top: 18px; padding: 12px; display: flex; gap: 9px; border-radius: 13px; background: #f4efff; color: #7756a5; }
 .crop-note > span { font-size: 13px; }
 .crop-note b, .crop-note small { display: block; }

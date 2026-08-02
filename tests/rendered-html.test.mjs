@@ -114,8 +114,9 @@ test("ships the finished product and cell editor without starter artifacts", asy
 });
 
 test("ships an installable offline app with mobile image capture and safe local drafts", async () => {
-  const [page, layout, manifestText, serviceWorker] = await Promise.all([
+  const [page, css, layout, manifestText, serviceWorker] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
     readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
@@ -135,7 +136,15 @@ test("ships an installable offline app with mobile image capture and safe local 
   assert.match(page, /一粒画在这台设备上/);
   assert.match(page, /function undoEraseMask/);
   assert.match(page, /对照原图/);
-  assert.match(serviceWorker, /yilihua-shell-v1/);
+  assert.match(page, /function removeConnectedBackground/);
+  assert.match(page, /cornerBackgroundSamples/);
+  assert.match(page, /自动识别四角背景/);
+  assert.match(page, /背景清理强度/);
+  assert.match(page, /setBackgroundSample/);
+  assert.match(page, /context\.putImageData\(removeConnectedBackground/);
+  assert.match(css, /\.crop-background-preview/);
+  assert.match(css, /\.crop-background-controls/);
+  assert.match(serviceWorker, /yilihua-shell-v2/);
   assert.match(serviceWorker, /SKIP_WAITING/);
   assert.match(serviceWorker, /request\.mode === "navigate"/);
 });

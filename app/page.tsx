@@ -1290,16 +1290,85 @@ function CreatorJourney({
   );
 }
 
+function cornerBackgroundSamples(data: Uint8ClampedArray, width: number, height: number) {
+  const samples: RgbColor[] = [];
+  const margin = Math.max(2, Math.round(Math.min(width, height) * .025));
+  const corners = [[margin, margin], [width - margin - 1, margin], [margin, height - margin - 1], [width - margin - 1, height - margin - 1]];
+  corners.forEach(([centerX, centerY]) => {
+    let r = 0; let g = 0; let b = 0; let count = 0;
+    for (let y = Math.max(0, centerY - 2); y <= Math.min(height - 1, centerY + 2); y += 1) {
+      for (let x = Math.max(0, centerX - 2); x <= Math.min(width - 1, centerX + 2); x += 1) {
+        const index = (y * width + x) * 4;
+        if (data[index + 3] < 16) continue;
+        r += data[index]; g += data[index + 1]; b += data[index + 2]; count += 1;
+      }
+    }
+    if (count) samples.push({ r: r / count, g: g / count, b: b / count });
+  });
+  return samples;
+}
+
+function removeConnectedBackground(imageData: ImageData, tolerance: number, feather: number, manualSample: RgbColor | null) {
+  const { data, width, height } = imageData;
+  const samples = manualSample ? [manualSample] : cornerBackgroundSamples(data, width, height);
+  if (!samples.length) return imageData;
+  const upper = tolerance + Math.max(1, feather);
+  const seen = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0; let tail = 0;
+  const distance = (pixel: number) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (const sample of samples) {
+      const red = data[pixel] - sample.r;
+      const green = data[pixel + 1] - sample.g;
+      const blue = data[pixel + 2] - sample.b;
+      best = Math.min(best, Math.sqrt(red * red + green * green + blue * blue));
+    }
+    return best;
+  };
+  const add = (index: number) => {
+    if (seen[index]) return;
+    seen[index] = 2;
+    const pixel = index * 4;
+    if (data[pixel + 3] < 8 || distance(pixel) <= upper) {
+      seen[index] = 1;
+      queue[tail++] = index;
+    }
+  };
+  for (let x = 0; x < width; x += 1) { add(x); add((height - 1) * width + x); }
+  for (let y = 1; y < height - 1; y += 1) { add(y * width); add(y * width + width - 1); }
+  while (head < tail) {
+    const index = queue[head++];
+    const pixel = index * 4;
+    const colorDistance = distance(pixel);
+    const keep = colorDistance <= tolerance ? 0 : Math.min(1, (colorDistance - tolerance) / Math.max(1, feather));
+    data[pixel + 3] = Math.round(data[pixel + 3] * keep);
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if (x > 0) add(index - 1);
+    if (x + 1 < width) add(index + 1);
+    if (y > 0) add(index - width);
+    if (y + 1 < height) add(index + width);
+  }
+  return imageData;
+}
+
 function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: string; onCancel: () => void; onApply: (image: string) => void; onUseOriginal: () => void }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
   const [viewportSize, setViewportSize] = useState(420);
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [eraseMode, setEraseMode] = useState(false);
+  const [editorMode, setEditorMode] = useState<"move" | "erase" | "background">("move");
   const [eraseBrushSize, setEraseBrushSize] = useState(34);
   const [eraseStrokeCount, setEraseStrokeCount] = useState(0);
   const [showOriginalPreview, setShowOriginalPreview] = useState(false);
+  const [backgroundEnabled, setBackgroundEnabled] = useState(false);
+  const [backgroundTolerance, setBackgroundTolerance] = useState(42);
+  const [backgroundFeather, setBackgroundFeather] = useState(16);
+  const [backgroundSample, setBackgroundSample] = useState<RgbColor | null>(null);
+  const [backgroundPreview, setBackgroundPreview] = useState<string | null>(null);
+  const [showBackgroundOriginal, setShowBackgroundOriginal] = useState(false);
   const eraseMaskRef = useRef<HTMLCanvasElement>(null);
   const eraseHistoryRef = useRef<ImageData[]>([]);
   const eraseDrawRef = useRef({ active: false });
@@ -1314,6 +1383,8 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
     y: Math.max(-limitY, Math.min(limitY, next.y)),
   });
   const clampedOffset = clampOffset(offset);
+  const eraseMode = editorMode === "erase";
+  const backgroundMode = editorMode === "background";
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -1324,6 +1395,36 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
     observer.observe(viewport);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!backgroundEnabled || !viewportSize) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const image = new Image();
+      image.src = source;
+      try {
+        await image.decode();
+        if (cancelled) return;
+        const previewSize = Math.max(240, Math.min(640, Math.round(viewportSize * Math.min(2, window.devicePixelRatio || 1))));
+        const canvas = document.createElement("canvas");
+        canvas.width = previewSize;
+        canvas.height = previewSize;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return;
+        const scale = Math.max(viewportSize / image.naturalWidth, viewportSize / image.naturalHeight) * zoom;
+        const width = image.naturalWidth * scale;
+        const height = image.naturalHeight * scale;
+        const outputScale = previewSize / viewportSize;
+        context.drawImage(image, ((viewportSize - width) / 2 + clampedOffset.x) * outputScale, ((viewportSize - height) / 2 + clampedOffset.y) * outputScale, width * outputScale, height * outputScale);
+        const pixels = context.getImageData(0, 0, previewSize, previewSize);
+        context.putImageData(removeConnectedBackground(pixels, backgroundTolerance, backgroundFeather, backgroundSample), 0, 0);
+        if (!cancelled) setBackgroundPreview(canvas.toDataURL("image/png"));
+      } catch {
+        if (!cancelled) setBackgroundPreview(null);
+      }
+    }, 80);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [backgroundEnabled, backgroundFeather, backgroundSample, backgroundTolerance, clampedOffset.x, clampedOffset.y, source, viewportSize, zoom]);
 
   function clearEraseMask() {
     const mask = eraseMaskRef.current;
@@ -1392,6 +1493,33 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
 
   function startDrag(event: React.PointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (backgroundMode) {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      const rect = viewport.getBoundingClientRect();
+      const sampleX = event.clientX - rect.left;
+      const sampleY = event.clientY - rect.top;
+      const image = new Image();
+      image.src = source;
+      image.decode().then(() => {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(rect.width));
+        canvas.height = canvas.width;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return;
+        const scale = Math.max(rect.width / image.naturalWidth, rect.width / image.naturalHeight) * zoom;
+        const width = image.naturalWidth * scale;
+        const height = image.naturalHeight * scale;
+        context.drawImage(image, (rect.width - width) / 2 + clampedOffset.x, (rect.width - height) / 2 + clampedOffset.y, width, height);
+        const x = Math.max(0, Math.min(canvas.width - 1, Math.round(sampleX)));
+        const y = Math.max(0, Math.min(canvas.height - 1, Math.round(sampleY)));
+        const sample = context.getImageData(x, y, 1, 1).data;
+        setBackgroundSample({ r: sample[0], g: sample[1], b: sample[2] });
+        setBackgroundEnabled(true);
+        setShowBackgroundOriginal(false);
+      }).catch(() => undefined);
+      return;
+    }
     if (eraseMode) {
       snapshotEraseMask();
       eraseDrawRef.current.active = true;
@@ -1432,8 +1560,10 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
     const width = image.naturalWidth * scale;
     const height = image.naturalHeight * scale;
     const outputScale = outputSize / viewportSize;
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, outputSize, outputSize);
+    if (!backgroundEnabled) {
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, outputSize, outputSize);
+    }
     context.drawImage(image, ((viewportSize - width) / 2 + clampedOffset.x) * outputScale, ((viewportSize - height) / 2 + clampedOffset.y) * outputScale, width * outputScale, height * outputScale);
     const mask = eraseMaskRef.current;
     if (eraseStrokeCount && mask?.width) {
@@ -1451,6 +1581,10 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
         context.drawImage(repairCanvas, 0, 0);
       }
     }
+    if (backgroundEnabled) {
+      const pixels = context.getImageData(0, 0, outputSize, outputSize);
+      context.putImageData(removeConnectedBackground(pixels, backgroundTolerance, backgroundFeather, backgroundSample), 0, 0);
+    }
     onApply(canvas.toDataURL("image/png"));
   }
 
@@ -1461,29 +1595,38 @@ function ImageCropper({ source, onCancel, onApply, onUseOriginal }: { source: st
         <button aria-label="关闭图片裁剪" onClick={onCancel}>×</button>
       </header>
       <div className="crop-workspace">
-        <div className={`crop-viewport ${eraseMode ? "erase-mode" : ""}`} ref={viewportRef} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
-          <img src={source} alt="待裁剪图片" draggable={false} onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} style={{ width: `${displayWidth}px`, height: `${displayHeight}px`, transform: `translate(calc(-50% + ${clampedOffset.x}px), calc(-50% + ${clampedOffset.y}px))` }} />
+        <div className={`crop-viewport ${eraseMode ? "erase-mode" : ""} ${backgroundMode ? "background-mode" : ""}`} ref={viewportRef} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>
+          <img className={`crop-source-image ${backgroundEnabled && backgroundPreview && !showBackgroundOriginal ? "is-background-hidden" : ""}`} src={source} alt="待裁剪图片" draggable={false} onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} style={{ width: `${displayWidth}px`, height: `${displayHeight}px`, transform: `translate(calc(-50% + ${clampedOffset.x}px), calc(-50% + ${clampedOffset.y}px))` }} />
+          {backgroundEnabled && backgroundPreview && <img className={`crop-background-preview ${showBackgroundOriginal ? "is-hidden" : ""}`} src={backgroundPreview} alt="背景清理预览" draggable={false} />}
           <canvas ref={eraseMaskRef} className={`crop-erase-mask ${showOriginalPreview ? "is-hidden" : ""}`} aria-hidden="true" />
           <div className="crop-thirds" aria-hidden="true"><i /><i /><i /><i /></div>
-          <span className="crop-hint">{eraseMode ? (showOriginalPreview ? "正在查看未处理原图" : "粉色标记处会被柔化消除") : "拖动调整主体位置"}</span>
+          <span className="crop-hint">{eraseMode ? (showOriginalPreview ? "正在查看未处理原图" : "粉色标记处会被柔化消除") : backgroundMode ? (backgroundSample ? "已按点选颜色清理背景，可继续点选" : "点一下要去除的背景颜色") : "拖动调整主体位置"}</span>
         </div>
         <aside className="crop-controls">
-          <div className="crop-editor-mode"><button className={!eraseMode ? "active" : ""} onClick={() => setEraseMode(false)}>移动裁剪</button><button className={eraseMode ? "active" : ""} onClick={() => setEraseMode(true)}>文字消除</button></div>
-          {!eraseMode ? <>
+          <div className="crop-editor-mode"><button className={editorMode === "move" ? "active" : ""} onClick={() => setEditorMode("move")}>移动裁剪</button><button className={eraseMode ? "active" : ""} onClick={() => setEditorMode("erase")}>文字消除</button><button className={backgroundMode ? "active" : ""} onClick={() => { setEditorMode("background"); setBackgroundEnabled(true); setShowBackgroundOriginal(false); }}>背景清理</button></div>
+          {editorMode === "move" ? <>
             <div className="crop-control-title"><span>缩放画面</span><strong>{Math.round(zoom * 100)}%</strong></div>
             <input aria-label="裁剪图片缩放" type="range" min="1" max="3" step="0.01" value={zoom} onChange={(event) => { clearEraseMask(); setZoom(Number(event.target.value)); }} />
             <div className="crop-zoom-presets">{[1, 1.5, 2, 3].map((value) => <button className={Math.abs(zoom - value) < .01 ? "active" : ""} key={value} onClick={() => { clearEraseMask(); setZoom(value); }}>{value}×</button>)}</div>
             <button className="crop-reset" onClick={() => { clearEraseMask(); setZoom(1); setOffset({ x: 0, y: 0 }); }}>↺ 恢复居中</button>
-          </> : <div className="crop-erase-controls">
+          </> : eraseMode ? <div className="crop-erase-controls">
             <div className="crop-control-title"><span>涂抹大小</span><strong>{eraseBrushSize}px</strong></div>
             <input aria-label="文字消除涂抹大小" type="range" min="12" max="90" value={eraseBrushSize} onChange={(event) => setEraseBrushSize(Number(event.target.value))} />
             <div className="crop-erase-actions"><button disabled={!eraseStrokeCount} onClick={undoEraseMask}>↶ 撤销一步</button><button disabled={!eraseStrokeCount} className={showOriginalPreview ? "active" : ""} onClick={() => setShowOriginalPreview((visible) => !visible)}>{showOriginalPreview ? "查看标记" : "对照原图"}</button></div>
             <button className="crop-reset" disabled={!eraseStrokeCount} onClick={clearEraseMask}>清除涂抹，重新标记</button>
+          </div> : <div className="crop-background-controls">
+            <div className="crop-background-status"><i style={{ background: backgroundSample ? `rgb(${backgroundSample.r}, ${backgroundSample.g}, ${backgroundSample.b})` : "linear-gradient(135deg,#fff,#eadce4)" }} /><span><b>{backgroundSample ? "使用点选背景色" : "自动识别四角背景"}</b><small>{backgroundSample ? "再点图片可重新取样" : "主体与背景反差越大越准确"}</small></span></div>
+            <div className="crop-control-title"><span>清理强度</span><strong>{backgroundTolerance}</strong></div>
+            <input aria-label="背景清理强度" type="range" min="12" max="100" value={backgroundTolerance} onChange={(event) => setBackgroundTolerance(Number(event.target.value))} />
+            <div className="crop-control-title"><span>边缘柔化</span><strong>{backgroundFeather}</strong></div>
+            <input aria-label="背景边缘柔化" type="range" min="0" max="40" value={backgroundFeather} onChange={(event) => setBackgroundFeather(Number(event.target.value))} />
+            <div className="crop-erase-actions"><button onClick={() => { setBackgroundSample(null); setBackgroundEnabled(true); setShowBackgroundOriginal(false); }}>自动识别</button><button className={showBackgroundOriginal ? "active" : ""} onClick={() => setShowBackgroundOriginal((visible) => !visible)}>{showBackgroundOriginal ? "查看效果" : "对照原图"}</button></div>
+            <button className="crop-reset" onClick={() => { setBackgroundEnabled(false); setBackgroundSample(null); setBackgroundPreview(null); setEditorMode("move"); }}>恢复完整背景</button>
           </div>}
-          <div className="crop-note"><span>✦</span><p><b>{eraseMode ? "图片只在当前设备处理" : "裁剪不会降低图纸清晰度"}</b><small>{eraseMode ? "适合清理标题、水印和杂字；复杂纹理可加大笔刷多涂一次。" : "会生成 1400 × 1400 的处理图，足够制作最大画布。"}</small></p></div>
+          <div className="crop-note"><span>✦</span><p><b>{eraseMode || backgroundMode ? "图片只在当前设备处理" : "裁剪不会降低图纸清晰度"}</b><small>{eraseMode ? "适合清理标题、水印和杂字；复杂纹理可加大笔刷多涂一次。" : backgroundMode ? "只清理与边缘连通的相近颜色，主体内部的同色区域会尽量保留。" : "会生成 1400 × 1400 的处理图，足够制作最大画布。"}</small></p></div>
         </aside>
       </div>
-      <footer className="crop-footer"><button onClick={onUseOriginal}>跳过裁剪，使用原图</button><button className="primary" onClick={applyCrop}>应用裁剪 <span>→</span></button></footer>
+      <footer className="crop-footer"><button onClick={onUseOriginal}>跳过处理，使用原图</button><button className="primary" onClick={applyCrop}>{backgroundEnabled || eraseStrokeCount ? "应用图片处理" : "应用裁剪"} <span>→</span></button></footer>
     </section>
   );
 }
