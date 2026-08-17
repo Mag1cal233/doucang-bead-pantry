@@ -1,110 +1,65 @@
-# 一粒画 本地测试版
+# 一粒画 2.0 内测版
 
-一粒画是一款在浏览器本地把图片转换为拼豆图纸的工具，支持库存约束、跨品牌换色、15×15 至 116×116 画布、可缩放图纸总览、分区施工图和采购清单。
+一粒画是一款面向拼豆爱好者的浏览器创作工具。它把图片转换为可实际制作的拼豆图纸，并把库存、门店色号、用量、缺色和制作进度放进同一条流程。
 
-公开测试地址：<https://mag1cal233.github.io/doucang-bead-pantry/>
+当前公开版仍是 1.0；本仓库中的 2.0 功能正在本地测试，尚未发布。
 
-## 当前图纸能力
+## 这一版能做什么
 
-- 图纸总览支持 50%–300% 缩放与适合窗口
-- 颜色数量上限可选 4、6、8、10、12、16、20、24、32、48、64 色
-- 高清色号施工图、10×10 分区拼、高清 PNG 和 A4 分页打印
+- 裁剪图片、清理连通背景和消除文字后再生成图纸
+- 在 15×15 至 116×116 之间调整画布，在 3 至 264 色之间调整颜色上限
+- 从“我的库存”“店内可买”“完整参考色卡”三种来源中选择颜色
+- 按品牌、系列和色号区间锁定店内货架；支持多段区间、反向选择和缺货排除
+- 保存、导入和导出多个店铺色号方案，这些能力在内测版中免费
+- 查看可缩放总览、带坐标色号图、10×10 分区图、采购清单和制作进度
+- 导出高清 PNG、分页打印图纸、库存 CSV 与完整项目包
+- 进入邀请制内测社区，浏览、搜索和分类查看图纸；支持发布本机作品、点赞、收藏与撤下
 
-## 技术基础
+## 数据保存
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+2.0 内测版的创作功能不要求登录，作品、库存、草稿和店铺方案保存在当前浏览器。清理浏览器数据可能会删除这些内容，重要作品应定期导出项目包或完整备份。
 
-## Prerequisites
+社区前端已经提供两种数据模式：未配置服务地址时，页面明确显示“本机社区预览”；配置 `NEXT_PUBLIC_COMMUNITY_API_BASE` 后，作品流、发布、互动和撤下会调用 `/v1/community/posts` 接口。账号准入和内部核验由社区服务负责，前端不伪造核验状态。
 
-- Node.js `>=22.13.0`
+正式云端存储和支付尚未接入。代码只记录已经确认的产品规则，不会显示虚假的登录、支付或“上传成功”状态。
 
-## Quick Start
+## 主要源码
+
+- `app/page.tsx`：创作、库存、图纸编辑、制作进度与本机持久化
+- `app/community.ts`：社区数据结构、本机内测示例和可替换的服务端接口适配
+- `docs/社区接口约定.md`：社区服务端需要实现的接口、字段和安全边界
+- `app/palette-range.ts`：品牌色卡、系列区间、排除色号与店铺方案解析
+- `app/entitlements.ts`：内测免费能力及未来 Pro/云端容量边界
+- `app/mard-colors.ts`：MARD 屏幕参考色数据
+- `app/brand-colors.ts`：Artkal、Perler、Hama、Nabbi、Yant 参考色数据
+- `app/globals.css`：页面设计系统、响应式布局与打印样式
+- `tests/rendered-html.test.mjs`：产品外壳、离线能力和关键功能回归检查
+
+## 本地运行
+
+需要 Node.js 22.13 或更高版本。
 
 ```bash
 npm install
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+打开 `http://localhost:3000/`。
 
-## Included Shape
+提交前检查：
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+npm run typecheck
+npm run lint
+npm run verify
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+## 色卡说明
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+网页中的 HEX 是屏幕匹配参考值，不是实体豆子的分光测色结果。不同批次、光线、屏幕和相机白平衡都可能造成偏差，实际制作前建议用手边实体豆子复核关键颜色。
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+跨品牌参考色的一部分来自 MIT 许可的 `maxcleme/beadcolors`；完整版权声明见 `THIRD_PARTY_NOTICES.md`。MARD 数据来源和可信度标记写在 `app/mard-colors.ts` 文件头部。
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+## 软件著作权整理
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+源码模块、原创功能和第三方材料的边界见 `docs/软件著作权代码说明.md`。该文件用于内部整理，不替代代理机构或登记机关的法律意见。

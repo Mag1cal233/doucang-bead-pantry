@@ -1,6 +1,26 @@
 [
   {
     "date": "2026-08-17",
+    "scope": "community",
+    "macrostructure": "Ecosystem Index",
+    "theme": "existing-design-system",
+    "theme_axes": "pink paper / content-led feed / berry action",
+    "enrichment": "Real pattern previews from project data",
+    "vibe": "cute restrained craft community",
+    "brief": "Invite-only beta community with publishing, likes, favorites, detail palettes and reversible removal"
+  },
+  {
+    "date": "2026-08-17",
+    "scope": "store-palette",
+    "macrostructure": "Brand → series → interval → exclusions → apply",
+    "theme": "existing-design-system",
+    "theme_axes": "pink paper / flat workbench / berry action",
+    "enrichment": "Live color range and availability summary",
+    "vibe": "fast in-store utility",
+    "brief": "Series-aware store color range builder with mobile bottom-sheet behavior"
+  },
+  {
+    "date": "2026-08-17",
     "scope": "app",
     "macrostructure": "Task-first Launchpad + Workbench",
     "theme": "custom",

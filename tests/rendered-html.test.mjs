@@ -38,7 +38,7 @@ test("server-renders the 一粒画 product shell", async () => {
   assert.match(html, /把喜欢/);
   assert.match(html, /开始图片转拼豆/);
   assert.match(html, /豆子库存/);
-  assert.match(html, /正式版 1\.0/);
+  assert.match(html, /2\.0 内测版/);
   assert.match(html, /图片只在你的设备上处理/);
   assert.doesNotMatch(html, /class="print-book"/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
@@ -67,6 +67,8 @@ test("ships the finished product and cell editor without starter artifacts", asy
   assert.match(page, /const prepared = await preparePatternPixels/);
   assert.match(page, /remaining\[paletteIndex\] <= 0/);
   assert.match(page, /function calculatePlanMetrics/);
+  assert.match(page, /function generatedPlansDiffer/);
+  assert.match(page, /go\(canCompare \? "plans" : "craft"\)/);
   assert.match(page, /type InventoryFilter = "all" \| "low" \| "preferred"/);
   assert.match(page, /function addInventoryColor/);
   assert.match(page, /function removeInventoryColor/);
@@ -149,7 +151,7 @@ test("ships an installable offline app with mobile image capture and safe local 
   assert.match(css, /\.crop-background-controls/);
   assert.match(page, /const swatches: Swatch\[\] = \[\]/);
   assert.match(page, /inventoryDebited/);
-  assert.match(page, /colorKey\(cell\.brand \?\? "MARD", cell\.code\)/);
+  assert.match(page, /resolvedColorKey\(cell\)/);
   assert.match(page, /file\.size > 20 \* 1024 \* 1024/);
   assert.match(page, /file\.size > 10 \* 1024 \* 1024/);
   assert.match(page, /navigator\.storage\?\.persist/);
@@ -161,4 +163,79 @@ test("ships an installable offline app with mobile image capture and safe local 
   assert.match(serviceWorker, /yilihua-shell-v3/);
   assert.match(serviceWorker, /SKIP_WAITING/);
   assert.match(serviceWorker, /request\.mode === "navigate"/);
+});
+
+test("ships free store color ranges, an invite-only community, and the confirmed future Pro boundary", async () => {
+  const [page, css, paletteRange, entitlements, community] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/palette-range.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/entitlements.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/community.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(paletteRange, /type PaletteSource = "inventory" \| "store" \| "reference"/);
+  assert.match(paletteRange, /`\$\{brand\}::\$\{series\}::\$\{code\}`/);
+  assert.match(paletteRange, /Math\.min\(fromIndex, toIndex\)/);
+  assert.match(paletteRange, /seriesColors\.slice\(start, end \+ 1\)/);
+  assert.match(paletteRange, /excluded\.has\(key\)/);
+  assert.match(page, /店内色号范围/);
+  assert.match(page, /使用这 \{storePaletteResult\.colors\.length\} 个色号/);
+  assert.match(page, /paletteSource === "store"/);
+  assert.match(page, /不会写入或扣减库存/);
+  assert.match(page, /yilihua-store-palettes-v1/);
+  assert.match(page, /\.yilihua-store/);
+  assert.match(page, /resolvedColorKey/);
+  assert.match(css, /\.store-palette-dialog\s*\{/);
+  assert.match(css, /\.palette-source-grid\s*\{/);
+  assert.match(css, /@media \(max-width: 360px\)/);
+  assert.match(entitlements, /plan: "free-beta"/);
+  assert.match(entitlements, /内测版 · 本机免费/);
+  assert.match(entitlements, /店内选色与方案管理保持免费/);
+  assert.match(entitlements, /plan: "free"/);
+  assert.match(entitlements, /plan: "pro"/);
+  assert.match(entitlements, /"store-range", "unlimited-store-presets", "store-preset-transfer", "advanced-refine", "batch-processing", "cloud-projects"/);
+  assert.match(entitlements, /privateCloudProjects: 1/);
+  assert.match(entitlements, /privateCloudProjects: 40/);
+  assert.match(entitlements, /publicCloudProjects: "unlimited"/);
+  assert.match(entitlements, /publicPublishingRequiresConsent: true/);
+  assert.match(entitlements, /publicProjectsCanBeDeleted: true/);
+  assert.match(entitlements, /migratesToFormal: false/);
+  assert.match(entitlements, /recovery: "none"/);
+  assert.match(entitlements, /recovery: "sms"/);
+  assert.match(entitlements, /defaultSharedContent: "pattern-palette-description"/);
+  assert.match(entitlements, /searchEngineIndexing: false/);
+  assert.match(entitlements, /privateTrashDays: 30/);
+  assert.match(entitlements, /demoPublishing: "invite-only"/);
+  assert.match(entitlements, /publicCommunityRuntime: "beta-invite-only"/);
+  assert.match(entitlements, /originalImagesCanBePublished: false/);
+  assert.match(entitlements, /publicProjectCapacityCopy: "no-plan-limit-subject-to-fair-use"/);
+  assert.match(entitlements, /communityInteractions: \["like", "favorite"\]/);
+  assert.match(entitlements, /defaultLicense: "platform-display-only"/);
+  assert.match(entitlements, /launchModeration: "invite-only-then-hybrid-review"/);
+  assert.match(entitlements, /monthlyPriceCny: 12/);
+  assert.match(entitlements, /annualPriceCny: 68/);
+  assert.match(entitlements, /autoRenew: false/);
+  assert.match(entitlements, /trialRequiresPaymentMethod: false/);
+  assert.match(entitlements, /trialStartsWhen: "confirmed-first-batch"/);
+  assert.match(entitlements, /renewal: "fixed-term-manual"/);
+  assert.match(entitlements, /checkoutLaunch: "pricing-display-only"/);
+  assert.match(entitlements, /refund: "first-purchase-7-day-and-service-failure-prorated"/);
+  assert.match(entitlements, /proExpiry: "one-editable-others-read-only-30-days-then-delete"/);
+  assert.match(entitlements, /versionHistory: "free-current-pro-30-days-50-versions"/);
+  assert.match(entitlements, /batchProcessing: "unlimited-runs-up-to-10-local-images"/);
+  assert.match(entitlements, /advancedRefine: "free"/);
+  assert.match(entitlements, /deviceLimit: \{ free: 2, pro: 5 \}/);
+  assert.doesNotMatch(entitlements, /stripe|createPayment|paymentIntent/i);
+  assert.match(page, /type Screen = "home" \| "community"/);
+  assert.match(page, /拼豆社区/);
+  assert.match(page, /社区只使用图纸预览、色板和说明，不发布你的原始图片/);
+  assert.match(page, /toggleCommunityPostReaction/);
+  assert.match(page, /undoCommunityRemoval/);
+  assert.match(css, /\.community-grid\s*\{/);
+  assert.match(css, /\.community-detail-backdrop\s*\{/);
+  assert.match(community, /NEXT_PUBLIC_COMMUNITY_API_BASE/);
+  assert.match(community, /yilihua-community-v1/);
+  assert.match(community, /\/v1\/community\/posts/);
+  assert.match(community, /不冒充真实用户或真实互动数据/);
 });

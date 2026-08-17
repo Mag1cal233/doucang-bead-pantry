@@ -1,8 +1,8 @@
 {
-  "scannedAt": "2026-08-17T19:52:44+08:00",
-  "packageMtimeUtc": "2026-07-29T10:44:29.2363664Z",
+  "scannedAt": "2026-08-17T23:00:00+08:00",
+  "packageMtimeUtc": "2026-08-17T12:11:56Z",
   "scope": "app",
-  "framework": "Next.js 16 app router with vinext",
+  "framework": "Next.js 16.2 app router with vinext and an optional Worker/D1 deployment path",
   "fontStack": "Microsoft YaHei, PingFang SC, Noto Sans SC; rounded display treatment on the current home",
   "palette": "legacy sage tokens plus later pink/purple overrides",
   "motion": "motion-cut; no animation library",

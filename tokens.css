@@ -61,4 +61,12 @@
   --radius-pill: 999px;
   --shadow-card: 0 1.25rem 3.5rem oklch(35% 0.045 345 / 0.09);
   --shadow-float: 0 1rem 2rem oklch(35% 0.045 345 / 0.14);
+
+  --z-base: 1;
+  --z-raised: 10;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
 }

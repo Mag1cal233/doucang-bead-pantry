@@ -4,11 +4,43 @@
 
 import { ChangeEvent, CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { crossBrandColors, type CrossBrandName } from "./brand-colors";
+import {
+  communityBackendEnabled,
+  communityCategories,
+  communityLocalStorageKey,
+  communitySeedPosts,
+  createLocalCommunityPost,
+  deleteCommunityPost,
+  fetchCommunityPosts,
+  isCommunityPost,
+  publishCommunityPost,
+  updateCommunityReaction,
+  type CommunityCategory,
+  type CommunityPost,
+  type CommunityReaction,
+} from "./community";
+import { localBetaEntitlement } from "./entitlements";
 import { mardColors, mardSeries } from "./mard-colors";
+import {
+  catalogColorKey,
+  catalogPaletteForBrand,
+  isStorePalettePreset,
+  makeStorePalettePreset,
+  makeStoreRange,
+  paletteBrands,
+  paletteSeries,
+  resolveStorePalette,
+  type CatalogPaletteColor,
+  type PaletteBrand,
+  type PaletteSource,
+  type StorePalettePackage,
+  type StorePalettePreset,
+  type StoreRange,
+} from "./palette-range";
 
-type Screen = "home" | "inventory" | "catalog" | "create" | "plans" | "craft";
+type Screen = "home" | "community" | "inventory" | "catalog" | "create" | "plans" | "craft";
 type Strategy = "zero" | "balance" | "quality";
-type GeneratedCell = { brand?: string; code: string; color: string; name?: string } | null;
+type GeneratedCell = { brand?: string; series?: string; code: string; color: string; name?: string } | null;
 type GeneratedPatterns = Record<Strategy, GeneratedCell[]>;
 type PatternView = "chart" | "section" | "preview";
 type ColorShift = "original" | "warm" | "cool" | "bright" | "soft";
@@ -19,13 +51,14 @@ type PreparedPatternPixels = { pixels: Array<RgbColor | null>; importance: Float
 type PlanMetrics = { match: number; stock: number; shortage: number; colors: number; beads: number; unfilled: number; time: string };
 type CellEditTool = "paint" | "erase" | "pick" | "fill" | "select";
 type CellSelection = { start: number; end: number | null };
-type UsageItem = { brand: string; code: string; color: string; count: number; name: string };
-type Swatch = { brand: string; code: string; name: string; color: string; count: number; safe: number };
+type UsageItem = { brand: string; series?: string; code: string; color: string; count: number; name: string };
+type Swatch = { brand: string; series?: string; code: string; name: string; color: string; count: number; safe: number };
 type ReplacementScope = "all" | "section";
 type ReplacementBrand = "MARD" | CrossBrandName;
 type InventoryFilter = "all" | "low" | "preferred";
-type ReplacementPreview = { fromBrand: string; fromCode: string; brand: string; toCode: string; color: string; name: string; label: string };
-type ReplacementHistoryItem = { plan: Strategy; cells: GeneratedCell[]; fromCode: string; toCode: string; fromBrand?: string; toBrand?: string };
+type CommunityFilter = "discover" | "latest" | "favorites" | "mine";
+type ReplacementPreview = { fromBrand: string; fromSeries?: string; fromCode: string; brand: string; series?: string; toCode: string; color: string; name: string; label: string };
+type ReplacementHistoryItem = { plan: Strategy; cells: GeneratedCell[]; fromCode: string; toCode: string; fromBrand?: string; fromSeries?: string; toBrand?: string; toSeries?: string };
 type SavedProject = {
   id: string;
   title: string;
@@ -43,6 +76,9 @@ type SavedProject = {
   view: PatternView;
   projectCompleted: boolean;
   inventoryDebited?: boolean;
+  paletteSource?: PaletteSource;
+  storePalette?: StorePalettePreset;
+  generationScopeLabel?: string;
 };
 type PortableProjectPackage = {
   format: "yilihua-project";
@@ -72,6 +108,8 @@ type CreationDraft = {
   imageFit: ImageFit;
   imageSampling: ImageSampling;
   ignoreStock: boolean;
+  paletteSource?: PaletteSource;
+  storePalette?: StorePalettePreset;
   colorShift: ColorShift;
   strategy: Strategy;
   savedAt: number;
@@ -80,6 +118,7 @@ type CreationDraft = {
 const creationDraftKey = "yilihua-creation-draft-v1";
 const lastBackupKey = "yilihua-last-backup-v1";
 const draftImageDatabase = "yilihua-draft-images-v1";
+const storePaletteStorageKey = "yilihua-store-palettes-v1";
 
 function openDraftImageDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -154,13 +193,31 @@ const brandCatalog = [
 
 const replacementBrands: ReplacementBrand[] = ["MARD", "Artkal", "Perler", "Hama", "Nabbi", "Yant"];
 
-function colorKey(brand: string, code: string) {
-  return `${brand}::${code}`;
+function colorKey(brand: string, code: string, series?: string) {
+  return series ? catalogColorKey(brand, series, code) : `${brand}::${code}`;
+}
+
+function resolvedColorKey(item: { brand?: string; series?: string; code: string }) {
+  return colorKey(item.brand ?? "MARD", item.code, item.series);
+}
+
+function findInventorySwatch(inventory: Swatch[], item: { brand?: string; series?: string; code: string }) {
+  const brand = item.brand ?? "MARD";
+  const exact = inventory.find((entry) => entry.brand === brand && entry.code === item.code && entry.series === item.series);
+  if (exact || !item.series) return exact ?? inventory.find((entry) => entry.brand === brand && entry.code === item.code);
+  if (!paletteBrands.includes(brand as PaletteBrand)) return undefined;
+  const catalogMatches = catalogPaletteForBrand(brand as PaletteBrand).filter((color) => color.code === item.code);
+  return catalogMatches.length === 1 ? inventory.find((entry) => entry.brand === brand && entry.code === item.code && !entry.series) : undefined;
 }
 
 function sameGeneratedCell(a: GeneratedCell, b: GeneratedCell) {
   if (!a || !b) return a === b;
-  return (a.brand ?? "MARD") === (b.brand ?? "MARD") && a.code === b.code && a.color === b.color;
+  return (a.brand ?? "MARD") === (b.brand ?? "MARD") && (a.series ?? "") === (b.series ?? "") && a.code === b.code && a.color === b.color;
+}
+
+function generatedPlansDiffer(patterns: GeneratedPatterns) {
+  const entries = [patterns.zero, patterns.balance, patterns.quality];
+  return entries.some((cells, index) => entries.slice(index + 1).some((other) => cells.some((cell, cellIndex) => !sameGeneratedCell(cell, other[cellIndex]))));
 }
 
 function rectangleIndexes(start: number, end: number, size: number) {
@@ -421,6 +478,20 @@ function MiniPixelArtwork({ template }: { template: InspirationTemplate }) {
   );
 }
 
+function CommunityArtwork({ post, label }: { post: CommunityPost; label?: string }) {
+  const previewSize = Math.max(1, Math.round(Math.sqrt(post.preview.length)));
+  return (
+    <div
+      className="community-artwork"
+      style={{ "--community-grid-size": previewSize } as CSSProperties}
+      role="img"
+      aria-label={label ?? `${post.title}图纸预览`}
+    >
+      {post.preview.map((color, index) => <i key={`${post.id}-${index}`} style={{ "--community-cell": color } as CSSProperties} />)}
+    </div>
+  );
+}
+
 function usePinchZoom(viewportRef: { current: HTMLElement | null }, zoom: number, onZoomChange: ((value: number) => void) | undefined, minimum: number, maximum: number, resetZoom = 1) {
   const zoomRef = useRef(zoom);
   const gestureRef = useRef({ active: false, distance: 0, zoom: 1, contentX: 0, contentY: 0 });
@@ -520,7 +591,7 @@ function GeneratedArtwork({ cells, size, highlight }: { cells: GeneratedCell[]; 
       {cells.map((cell, index) => (
         <span
           key={index}
-          className={`bead ${cell ? "" : "empty"} ${cell && highlight && colorKey(cell.brand ?? "MARD", cell.code) !== highlight ? "dimmed" : ""}`}
+          className={`bead ${cell ? "" : "empty"} ${cell && highlight && resolvedColorKey(cell) !== highlight ? "dimmed" : ""}`}
           style={{ "--bead-color": cell?.color ?? "transparent" } as CSSProperties}
           title={cell ? `${cell.brand ?? "MARD"} ${cell.code}` : undefined}
         />
@@ -551,7 +622,7 @@ function PatternOverview({ cells, size, zoom, highlight }: { cells: GeneratedCel
       if (!cell) return;
       const row = Math.floor(index / size);
       const column = index % size;
-      context.globalAlpha = highlight && colorKey(cell.brand ?? "MARD", cell.code) !== highlight ? .12 : 1;
+      context.globalAlpha = highlight && resolvedColorKey(cell) !== highlight ? .12 : 1;
       context.fillStyle = cell.color;
       context.fillRect(column * cellPixels, row * cellPixels, cellPixels, cellPixels);
     });
@@ -633,7 +704,7 @@ function PatternChart({ cells, size, zoom, highlight, startRow = 0, startColumn 
               const absoluteColumn = startColumn + column + 1;
               const cellIndex = (absoluteRow - 1) * size + absoluteColumn - 1;
               const cell = cells[cellIndex];
-              const dimmed = Boolean(cell && highlight && colorKey(cell.brand ?? "MARD", cell.code) !== highlight);
+              const dimmed = Boolean(cell && highlight && resolvedColorKey(cell) !== highlight);
               return (
                 <span
                   className={`chart-cell ${(absoluteColumn % 5 === 0) ? "major-x" : ""} ${(absoluteRow % 5 === 0) ? "major-y" : ""} ${dimmed ? "dimmed" : ""} ${selectedIndexes?.has(cellIndex) ? "selected-cell" : ""} ${editable ? "editable" : ""} ${dragEditable ? "drag-editable" : ""}`}
@@ -998,7 +1069,7 @@ function removeSpeckles(cells: GeneratedCell[], size: number, maxComponentSize =
     for (let start = 0; start < source.length; start += 1) {
       const startCell = source[start];
       if (!startCell || visited[start]) continue;
-      const sourceKey = colorKey(startCell.brand ?? "MARD", startCell.code);
+      const sourceKey = resolvedColorKey(startCell);
       const component: number[] = [];
       const queue = [start];
       visited[start] = 1;
@@ -1014,7 +1085,7 @@ function removeSpeckles(cells: GeneratedCell[], size: number, maxComponentSize =
           if (nextRow < 0 || nextRow >= size || nextColumn < 0 || nextColumn >= size) return;
           const neighborIndex = nextRow * size + nextColumn;
           const neighbor = source[neighborIndex];
-          if (!neighbor || visited[neighborIndex] || colorKey(neighbor.brand ?? "MARD", neighbor.code) !== sourceKey) return;
+          if (!neighbor || visited[neighborIndex] || resolvedColorKey(neighbor) !== sourceKey) return;
           visited[neighborIndex] = 1;
           queue.push(neighborIndex);
         });
@@ -1034,7 +1105,7 @@ function removeSpeckles(cells: GeneratedCell[], size: number, maxComponentSize =
           if (componentSet.has(neighborIndex)) return;
           const neighbor = source[neighborIndex];
           if (!neighbor) return;
-          const key = colorKey(neighbor.brand ?? "MARD", neighbor.code);
+          const key = resolvedColorKey(neighbor);
           const current = neighbors.get(key);
           neighbors.set(key, { cell: neighbor, touches: (current?.touches ?? 0) + 1 });
         });
@@ -1097,18 +1168,19 @@ async function preparePatternPixels(imageUrl: string, size: number, colorShift: 
   return { pixels, importance: measurePixelImportance(pixels, size) };
 }
 
-function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ignoreStock: boolean, inventory: Swatch[], maxColors: number, selectedColorKeys: string[], preferredColorKeys: string[]): GeneratedCell[] {
+function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, inventory: Swatch[], maxColors: number, selectedColorKeys: string[], preferredColorKeys: string[], sourcePalette?: CatalogPaletteColor[]): GeneratedCell[] {
   const { pixels, importance } = prepared;
   const allowedColors = new Set(selectedColorKeys);
   const preferredColors = new Set(preferredColorKeys);
   const stockColors = inventory
-    .filter((item) => !allowedColors.size || allowedColors.has(colorKey(item.brand, item.code)))
-    .map((item) => ({ ...item, limit: ignoreStock ? Infinity : Math.max(0, item.count - item.safe) }));
+    .filter((item) => !allowedColors.size || allowedColors.has(colorKey(item.brand, item.code, item.series)))
+    .map((item) => ({ ...item, series: item.series, limit: Math.max(0, item.count - item.safe) }));
   const fullColors = allowedColors.size
     ? stockColors.map((item) => ({ ...item, limit: Infinity }))
-    : mardColors.map((item) => ({ brand: "MARD", code: item.code, color: item.hex, name: "MARD 公开参考色", count: 0, safe: 0, limit: Infinity }));
-  let palette = (ignoreStock
-    ? fullColors
+    : mardColors.map((item) => ({ brand: "MARD", series: item.series, code: item.code, color: item.hex, name: "MARD 公开参考色", count: 0, safe: 0, limit: Infinity }));
+  const resolvedSource = sourcePalette?.map((item) => ({ ...item, count: 0, safe: 0, limit: Infinity }));
+  let palette = (resolvedSource
+    ? resolvedSource
     : strategy === "quality"
       ? fullColors
       : strategy === "balance"
@@ -1121,7 +1193,7 @@ function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ig
   if (palette.length > colorLimit) {
     const selectedIndexes = selectUsefulPaletteIndexes(pixels, importance, palette.map((item) => hexToRgb(item.color)), colorLimit);
     const preferredIndexes = palette
-      .map((item, paletteIndex) => ({ paletteIndex, preferred: preferredColors.has(colorKey(item.brand ?? "MARD", item.code)) }))
+      .map((item, paletteIndex) => ({ paletteIndex, preferred: preferredColors.has(colorKey(item.brand ?? "MARD", item.code, item.series)) }))
       .filter((item) => item.preferred)
       .slice(0, colorLimit)
       .map((item) => item.paletteIndex);
@@ -1146,7 +1218,7 @@ function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ig
     const nearest = findNearestPaletteCandidates(pixel, paletteRgb, candidateLimit)
       .map((candidate) => ({
         ...candidate,
-        cost: candidate.cost * (preferredColors.has(colorKey(palette[candidate.paletteIndex].brand ?? "MARD", palette[candidate.paletteIndex].code)) ? .88 : 1),
+        cost: candidate.cost * (preferredColors.has(colorKey(palette[candidate.paletteIndex].brand ?? "MARD", palette[candidate.paletteIndex].code, palette[candidate.paletteIndex].series)) ? .88 : 1),
       }))
       .sort((a, b) => a.cost - b.cost);
     candidateCache.set(key, nearest);
@@ -1169,7 +1241,7 @@ function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ig
       paletteRgb.forEach((paletteColor, paletteIndex) => {
         if (remaining[paletteIndex] <= 0) return;
         const paletteItem = palette[paletteIndex];
-        const cost = perceptualDistance(pixel, paletteColor) * (preferredColors.has(colorKey(paletteItem.brand ?? "MARD", paletteItem.code)) ? .88 : 1);
+        const cost = perceptualDistance(pixel, paletteColor) * (preferredColors.has(colorKey(paletteItem.brand ?? "MARD", paletteItem.code, paletteItem.series)) ? .88 : 1);
         if (cost < fallbackCost) {
           fallbackIndex = paletteIndex;
           fallbackCost = cost;
@@ -1179,7 +1251,7 @@ function generatePattern(prepared: PreparedPatternPixels, strategy: Strategy, ig
       choice = { paletteIndex: fallbackIndex, cost: fallbackCost };
     }
     const selected = palette[choice.paletteIndex];
-    result[item.index] = { brand: selected.brand ?? "MARD", code: selected.code, color: selected.color, name: selected.name };
+    result[item.index] = { brand: selected.brand ?? "MARD", series: selected.series, code: selected.code, color: selected.color, name: selected.name };
     if (Number.isFinite(remaining[choice.paletteIndex])) remaining[choice.paletteIndex] -= 1;
   }
   return result;
@@ -1199,11 +1271,11 @@ function calculatePlanMetrics(cells: GeneratedCell[], reference: PreparedPattern
   cells.forEach((cell) => {
     if (!cell) return;
     beadCount += 1;
-    const key = colorKey(cell.brand ?? "MARD", cell.code);
+    const key = resolvedColorKey(cell);
     usage.set(key, (usage.get(key) ?? 0) + 1);
   });
 
-  const usableStock = new Map(inventory.map((item) => [colorKey(item.brand, item.code), Math.max(0, item.count - item.safe)]));
+  const usableStock = new Map(inventory.map((item) => [colorKey(item.brand, item.code, item.series), Math.max(0, item.count - item.safe)]));
   let coveredByStock = 0;
   let shortage = 0;
   usage.forEach((count, key) => {
@@ -1654,7 +1726,13 @@ export default function Home() {
   const [cropSource, setCropSource] = useState<string | null>(null);
   const [showImageCropper, setShowImageCropper] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [ignoreStock, setIgnoreStock] = useState(false);
+  const [paletteSource, setPaletteSource] = useState<PaletteSource>("inventory");
+  const [showStorePalette, setShowStorePalette] = useState(false);
+  const [storePalette, setStorePalette] = useState<StorePalettePreset>(() => makeStorePalettePreset());
+  const [storePresets, setStorePresets] = useState<StorePalettePreset[]>([]);
+  const [storePalettesReady, setStorePalettesReady] = useState(false);
+  const [storePresetName, setStorePresetName] = useState("");
+  const [storeExcludeInput, setStoreExcludeInput] = useState("");
   const [gridSize, setGridSize] = useState(29);
   const [maxColors, setMaxColors] = useState(12);
   const [imageFit, setImageFit] = useState<ImageFit>("cover");
@@ -1706,12 +1784,25 @@ export default function Home() {
   const [batchSimilarity, setBatchSimilarity] = useState(75);
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [projectsReady, setProjectsReady] = useState(false);
+  const [communityPosts, setCommunityPosts] = useState<CommunityPost[]>(communitySeedPosts);
+  const [communityReady, setCommunityReady] = useState(false);
+  const [communityConnection, setCommunityConnection] = useState<"local" | "connecting" | "remote" | "unavailable">(communityBackendEnabled ? "connecting" : "local");
+  const [communityFilter, setCommunityFilter] = useState<CommunityFilter>("discover");
+  const [communityCategory, setCommunityCategory] = useState<"all" | CommunityCategory>("all");
+  const [communityQuery, setCommunityQuery] = useState("");
+  const [showCommunityPublisher, setShowCommunityPublisher] = useState(false);
+  const [communityProjectId, setCommunityProjectId] = useState("");
+  const [communityDescription, setCommunityDescription] = useState("");
+  const [communityPublishCategory, setCommunityPublishCategory] = useState<CommunityCategory>("其他");
+  const [communityPublishConsent, setCommunityPublishConsent] = useState(false);
+  const [selectedCommunityPost, setSelectedCommunityPost] = useState<CommunityPost | null>(null);
+  const [communityUndo, setCommunityUndo] = useState<CommunityPost | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [currentProjectTitle, setCurrentProjectTitle] = useState("我的库存适配图纸");
   const [draftReady, setDraftReady] = useState(false);
-  const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+  const [isOnline, setIsOnline] = useState(true);
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
-  const [isStandalone, setIsStandalone] = useState(() => typeof window !== "undefined" && window.matchMedia("(display-mode: standalone)").matches);
+  const [isStandalone, setIsStandalone] = useState(false);
   const [updateWorker, setUpdateWorker] = useState<ServiceWorker | null>(null);
   const [showDevicePanel, setShowDevicePanel] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -1727,8 +1818,11 @@ export default function Home() {
   const cameraFileRef = useRef<HTMLInputElement>(null);
   const inventoryFileRef = useRef<HTMLInputElement>(null);
   const projectPackageFileRef = useRef<HTMLInputElement>(null);
+  const storePaletteFileRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const communityDeleteTimerRef = useRef<number | null>(null);
   const editStrokeRef = useRef<{ plan: Strategy; original: GeneratedCell[]; working: GeneratedCell[]; nextCell: GeneratedCell; changed: Set<number> } | null>(null);
+  const ignoreStock = paletteSource !== "inventory";
   usePinchZoom(overviewViewportRef, overviewZoom, patternView === "preview" ? setOverviewZoom : undefined, .5, 3, 1);
 
   /* eslint-disable react-hooks/set-state-in-effect -- Browser storage is hydrated only after the client mounts. */
@@ -1754,7 +1848,7 @@ export default function Home() {
   useEffect(() => {
     const readScreen = () => {
       const next = window.location.hash.replace(/^#/, "") as Screen;
-      if (["home", "inventory", "catalog", "create", "plans", "craft"].includes(next)) setScreen(next);
+      if (["home", "community", "inventory", "catalog", "create", "plans", "craft"].includes(next)) setScreen(next);
     };
     readScreen();
     window.addEventListener("popstate", readScreen);
@@ -1800,6 +1894,31 @@ export default function Home() {
 
   useEffect(() => {
     try {
+      const saved = window.localStorage.getItem(storePaletteStorageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved) as { presets?: unknown[]; active?: unknown };
+        const presets = Array.isArray(parsed.presets) ? parsed.presets.filter(isStorePalettePreset) : [];
+        if (presets.length) setStorePresets(presets);
+        if (isStorePalettePreset(parsed.active)) setStorePalette(parsed.active);
+      }
+    } catch {
+      // 店铺色号只是快捷模板；损坏时回到默认范围，不影响库存和作品。
+    } finally {
+      setStorePalettesReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!storePalettesReady) return;
+    try {
+      window.localStorage.setItem(storePaletteStorageKey, JSON.stringify({ presets: storePresets, active: storePalette }));
+    } catch {
+      flash("店内色号暂时无法保存，请先导出预设备份");
+    }
+  }, [storePalette, storePalettesReady, storePresets]);
+
+  useEffect(() => {
+    try {
       const saved = window.localStorage.getItem("doucang-projects-v1");
       if (saved) {
         const parsed = JSON.parse(saved) as SavedProject[];
@@ -1822,6 +1941,52 @@ export default function Home() {
   }, [projectsReady, savedProjects]);
 
   useEffect(() => {
+    let cancelled = false;
+    try {
+      const saved = window.localStorage.getItem(communityLocalStorageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved) as unknown[];
+        const validPosts = Array.isArray(parsed) ? parsed.filter(isCommunityPost) : [];
+        if (validPosts.length) setCommunityPosts(validPosts);
+      }
+    } catch {
+      // 社区缓存损坏时回到清楚标注的内测示例，不影响本机作品。
+    }
+
+    if (!communityBackendEnabled) {
+      setCommunityReady(true);
+      setCommunityConnection("local");
+      return () => { cancelled = true; };
+    }
+
+    setCommunityConnection("connecting");
+    fetchCommunityPosts().then((posts) => {
+      if (cancelled) return;
+      setCommunityPosts(posts);
+      setCommunityConnection("remote");
+    }).catch(() => {
+      if (cancelled) return;
+      setCommunityConnection("unavailable");
+    }).finally(() => {
+      if (!cancelled) setCommunityReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!communityReady) return;
+    try {
+      window.localStorage.setItem(communityLocalStorageKey, JSON.stringify(communityPosts));
+    } catch {
+      flash("社区收藏暂时无法保存在这台设备上");
+    }
+  }, [communityPosts, communityReady]);
+
+  useEffect(() => () => {
+    if (communityDeleteTimerRef.current !== null) window.clearTimeout(communityDeleteTimerRef.current);
+  }, []);
+
+  useEffect(() => {
     let legacyImage: string | undefined;
     try {
       const savedDraft = window.localStorage.getItem(creationDraftKey);
@@ -1833,7 +1998,9 @@ export default function Home() {
           if (typeof draft.maxColors === "number") setMaxColors(Math.max(3, Math.min(264, draft.maxColors)));
           if (draft.imageFit === "cover" || draft.imageFit === "contain") setImageFit(draft.imageFit);
           if (draft.imageSampling === "smooth" || draft.imageSampling === "pixel") setImageSampling(draft.imageSampling);
-          if (typeof draft.ignoreStock === "boolean") setIgnoreStock(draft.ignoreStock);
+          if (["inventory", "store", "reference"].includes(draft.paletteSource ?? "")) setPaletteSource(draft.paletteSource as PaletteSource);
+          else if (typeof draft.ignoreStock === "boolean") setPaletteSource(draft.ignoreStock ? "reference" : "inventory");
+          if (isStorePalettePreset(draft.storePalette)) setStorePalette(draft.storePalette);
           if (["original", "warm", "cool", "bright", "soft"].includes(draft.colorShift ?? "")) setColorShift(draft.colorShift as ColorShift);
           if (["zero", "balance", "quality"].includes(draft.strategy ?? "")) setStrategy(draft.strategy as Strategy);
         }
@@ -1860,6 +2027,8 @@ export default function Home() {
         imageFit,
         imageSampling,
         ignoreStock,
+        paletteSource,
+        storePalette,
         colorShift,
         strategy,
         savedAt: Date.now(),
@@ -1871,9 +2040,11 @@ export default function Home() {
       }
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [colorShift, draftReady, gridSize, ignoreStock, imageFit, imageSampling, maxColors, strategy, uploadedImage]);
+  }, [colorShift, draftReady, gridSize, ignoreStock, imageFit, imageSampling, maxColors, paletteSource, storePalette, strategy, uploadedImage]);
 
   useEffect(() => {
+    setIsOnline(navigator.onLine);
+    setIsStandalone(window.matchMedia("(display-mode: standalone)").matches);
     const onOnline = () => setIsOnline(true);
     const onOffline = () => setIsOnline(false);
     const onInstallPrompt = (event: Event) => {
@@ -1933,7 +2104,7 @@ export default function Home() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    if (!showShoppingList && !showBatchReplace && !showProjects && !showInventoryAdder && !showImageCropper && !showDevicePanel && !showHelp) return;
+    if (!showShoppingList && !showBatchReplace && !showProjects && !showInventoryAdder && !showStorePalette && !showImageCropper && !showDevicePanel && !showHelp && !selectedCommunityPost) return;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -1946,9 +2117,11 @@ export default function Home() {
         setShowBatchReplace(false);
         setShowProjects(false);
         setShowInventoryAdder(false);
+        setShowStorePalette(false);
         setShowImageCropper(false);
         setShowDevicePanel(false);
         setShowHelp(false);
+        setSelectedCommunityPost(null);
         return;
       }
       if (event.key === "Tab") {
@@ -1973,29 +2146,41 @@ export default function Home() {
       window.removeEventListener("keydown", closeOnEscape);
       previousFocus?.focus();
     };
-  }, [showBatchReplace, showDevicePanel, showHelp, showImageCropper, showInventoryAdder, showProjects, showShoppingList]);
+  }, [selectedCommunityPost, showBatchReplace, showDevicePanel, showHelp, showImageCropper, showInventoryAdder, showProjects, showShoppingList, showStorePalette]);
 
   const currentPlan = plans.find((plan) => plan.id === selectedPlan) ?? plans[0];
   const totalStock = useMemo(() => inventory.reduce((sum, item) => sum + item.count, 0), [inventory]);
-  const inventoryKeys = useMemo(() => new Set(inventory.map((item) => colorKey(item.brand, item.code))), [inventory]);
+  const inventoryKeys = useMemo(() => new Set(inventory.map((item) => colorKey(item.brand, item.code, item.series))), [inventory]);
   const activePreferredColorKeys = useMemo(() => preferredColorKeys.filter((key) => inventoryKeys.has(key)), [inventoryKeys, preferredColorKeys]);
   const activeSelectedColorKeys = useMemo(() => {
-    const inventoryKeys = new Set(inventory.map((item) => colorKey(item.brand, item.code)));
+    const inventoryKeys = new Set(inventory.map((item) => colorKey(item.brand, item.code, item.series)));
     return selectedColorKeys.filter((key) => inventoryKeys.has(key));
   }, [inventory, selectedColorKeys]);
   const selectedGenerationColors = useMemo(() => {
     const selectedKeys = new Set(activeSelectedColorKeys);
-    return inventory.filter((item) => selectedKeys.has(colorKey(item.brand, item.code)));
+    return inventory.filter((item) => selectedKeys.has(colorKey(item.brand, item.code, item.series)));
   }, [activeSelectedColorKeys, inventory]);
+  const storePaletteResult = useMemo(() => resolveStorePalette(storePalette), [storePalette]);
+  const storePaletteUnion = useMemo(() => resolveStorePalette({ ...storePalette, excludedKeys: [] }).colors, [storePalette]);
+  const generationPalette = useMemo(() => {
+    if (paletteSource === "store") return storePaletteResult.colors;
+    if (paletteSource === "reference") return catalogPaletteForBrand("MARD");
+    return undefined;
+  }, [paletteSource, storePaletteResult.colors]);
+  const paletteSourceLabel = paletteSource === "inventory"
+    ? `${inventory.length} 个库存色`
+    : paletteSource === "store"
+      ? `${storePalette.brand} · 店内 ${storePaletteResult.colors.length} 色`
+      : "MARD 完整色卡";
   const lowStockCount = useMemo(() => inventory.filter((item) => item.count < item.safe * 4).length, [inventory]);
   const filteredInventory = useMemo(() => {
     const query = inventoryQuery.trim().toLowerCase();
     const preferred = new Set(activePreferredColorKeys);
     return inventory.filter((item) => {
-      const matchesQuery = !query || item.code.toLowerCase().includes(query) || item.name.toLowerCase().includes(query) || item.brand.toLowerCase().includes(query) || item.color.toLowerCase().includes(query);
+      const matchesQuery = !query || item.code.toLowerCase().includes(query) || item.name.toLowerCase().includes(query) || item.brand.toLowerCase().includes(query) || item.series?.toLowerCase().includes(query) || item.color.toLowerCase().includes(query);
       const matchesFilter = inventoryFilter === "all"
         || (inventoryFilter === "low" && item.count < item.safe * 4)
-        || (inventoryFilter === "preferred" && preferred.has(colorKey(item.brand, item.code)));
+        || (inventoryFilter === "preferred" && preferred.has(colorKey(item.brand, item.code, item.series)));
       return matchesQuery && matchesFilter;
     });
   }, [activePreferredColorKeys, inventory, inventoryFilter, inventoryQuery]);
@@ -2023,14 +2208,14 @@ export default function Home() {
     selectedPattern.forEach((cell) => {
       if (!cell) return;
       const brand = cell.brand ?? "MARD";
-      const key = `${brand}::${cell.code}`;
+      const key = cell.series ? catalogColorKey(brand, cell.series, cell.code) : colorKey(brand, cell.code);
       const current = usage.get(key);
-      const stockColor = inventory.find((item) => item.brand === brand && item.code === cell.code);
-      usage.set(key, { brand, code: cell.code, color: cell.color, count: (current?.count ?? 0) + 1, name: stockColor?.name ?? cell.name ?? "色卡色" });
+      const stockColor = findInventorySwatch(inventory, cell);
+      usage.set(key, { brand, series: cell.series, code: cell.code, color: cell.color, count: (current?.count ?? 0) + 1, name: stockColor?.name ?? cell.name ?? "色卡色" });
     });
     return [...usage.values()].sort((a, b) => b.count - a.count);
   }, [selectedPattern, inventory]);
-  const actualProgress = generatedUsage.length ? Math.min(100, Math.round((completedColors.filter((key) => generatedUsage.some((item) => colorKey(item.brand, item.code) === key)).length / generatedUsage.length) * 100)) : 0;
+  const actualProgress = generatedUsage.length ? Math.min(100, Math.round((completedColors.filter((key) => generatedUsage.some((item) => resolvedColorKey(item) === key)).length / generatedUsage.length) * 100)) : 0;
   const craftPattern = selectedPattern ?? fallbackPattern;
   const craftSize = selectedPattern ? gridSize : 15;
   const craftUsage = generatedUsage.length ? generatedUsage : fallbackUsage;
@@ -2040,51 +2225,66 @@ export default function Home() {
   }, [cellSelection, craftSize]);
   const editPalette = useMemo(() => {
     const colors = new Map<string, UsageItem>();
-    craftUsage.forEach((item) => colors.set(colorKey(item.brand, item.code), item));
+    craftUsage.forEach((item) => colors.set(resolvedColorKey(item), item));
     inventory.forEach((item) => {
-      const key = colorKey(item.brand, item.code);
+      const key = colorKey(item.brand, item.code, item.series);
       if (!colors.has(key)) colors.set(key, { brand: item.brand, code: item.code, color: item.color, count: 0, name: item.name });
     });
     return [...colors.values()];
   }, [craftUsage, inventory]);
   const projectDisplayTitle = generatedPatterns ? currentProjectTitle : "橘猫午后";
   const activeSavedProject = activeProjectId ? savedProjects.find((project) => project.id === activeProjectId) : undefined;
+  const communityPublishProject = savedProjects.find((project) => project.id === communityProjectId) ?? savedProjects[0];
+  const visibleCommunityPosts = useMemo(() => {
+    const query = communityQuery.trim().toLowerCase();
+    return [...communityPosts]
+      .filter((post) => communityCategory === "all" || post.category === communityCategory)
+      .filter((post) => communityFilter !== "favorites" || post.favoritedByViewer)
+      .filter((post) => communityFilter !== "mine" || post.ownedByViewer)
+      .filter((post) => !query || [post.title, post.description, post.authorNickname, post.category].some((value) => value.toLowerCase().includes(query)))
+      .sort((a, b) => communityFilter === "discover"
+        ? Number(b.ownedByViewer) - Number(a.ownedByViewer) || b.publishedAt - a.publishedAt
+        : b.publishedAt - a.publishedAt);
+  }, [communityCategory, communityFilter, communityPosts, communityQuery]);
+  const favoriteCommunityCount = communityPosts.filter((post) => post.favoritedByViewer).length;
+  const ownedCommunityCount = communityPosts.filter((post) => post.ownedByViewer).length;
   const purchaseItems = useMemo(() => craftUsage.map((item) => {
-    const stock = inventory.find((entry) => entry.brand === item.brand && entry.code === item.code);
-    const current = stock?.count ?? 0;
-    const safe = stock?.safe ?? 0;
+    const stock = findInventorySwatch(inventory, item);
+    const buyingAtStore = paletteSource === "store";
+    const current = buyingAtStore ? 0 : stock?.count ?? 0;
+    const safe = buyingAtStore ? 0 : stock?.safe ?? 0;
     const usable = Math.max(0, current - safe);
     return {
       ...item,
-      brand: stock?.brand ?? "MARD",
+      brand: item.brand,
       current,
       safe,
       usable,
       shortage: Math.max(0, item.count - usable),
     };
-  }).filter((item) => item.shortage > 0).sort((a, b) => b.shortage - a.shortage), [craftUsage, inventory]);
+  }).filter((item) => item.shortage > 0).sort((a, b) => b.shortage - a.shortage), [craftUsage, inventory, paletteSource]);
   const purchaseGroups = useMemo(() => [...new Set(purchaseItems.map((item) => item.brand))].map((brand) => ({
     brand,
     items: purchaseItems.filter((item) => item.brand === brand),
   })), [purchaseItems]);
   const purchaseTotal = purchaseItems.reduce((sum, item) => sum + item.shortage, 0);
-  const selectedPurchaseItems = purchaseItems.filter((item) => selectedPurchaseKeys.includes(`${item.brand}::${item.code}`));
+  const selectedPurchaseItems = purchaseItems.filter((item) => selectedPurchaseKeys.includes(resolvedColorKey(item)));
   const selectedPurchaseTotal = selectedPurchaseItems.reduce((sum, item) => sum + item.shortage, 0);
   const batchReplacementPlan = useMemo(() => {
     if (!generatedPatterns) return [];
     const remaining = new Map<string, number>();
-    inventory.forEach((item) => remaining.set(`${item.brand}::${item.code}`, Math.max(0, item.count - item.safe)));
+    inventory.forEach((item) => remaining.set(colorKey(item.brand, item.code, item.series), Math.max(0, item.count - item.safe)));
     craftUsage.forEach((item) => {
-      const key = `${item.brand}::${item.code}`;
+      const key = resolvedColorKey(item);
       remaining.set(key, Math.max(0, (remaining.get(key) ?? 0) - item.count));
     });
 
     return purchaseItems.map((source) => {
       const sourceRgb = hexToRgb(source.color);
       const candidates = inventory
-        .filter((item) => item.brand !== source.brand || item.code !== source.code)
+        .filter((item) => colorKey(item.brand, item.code, item.series) !== resolvedColorKey(source))
         .map((item) => {
-          const available = remaining.get(`${item.brand}::${item.code}`) ?? 0;
+          const available = remaining.get(colorKey(item.brand, item.code, item.series)) ?? 0;
           const distance = perceptualDistance(sourceRgb, hexToRgb(item.color));
           const similarity = Math.max(0, Math.round(100 - Math.sqrt(distance) / 5));
           return { ...item, available, similarity, distance };
@@ -2093,7 +2293,7 @@ export default function Home() {
         .sort((a, b) => b.similarity - a.similarity || b.available - a.available);
       const target = candidates[0];
       if (target) {
-        const key = `${target.brand}::${target.code}`;
+        const key = colorKey(target.brand, target.code, target.series);
         remaining.set(key, (remaining.get(key) ?? 0) - source.count);
       }
       return { source, target };
@@ -2112,9 +2312,9 @@ export default function Home() {
   const sectionStartColumn = activeSectionColumn * 10;
   const sectionHeight = Math.min(10, craftSize - sectionStartRow);
   const sectionWidth = Math.min(10, craftSize - sectionStartColumn);
-  const highlightedUsage = highlight ? craftUsage.find((item) => colorKey(item.brand, item.code) === highlight) : undefined;
+  const highlightedUsage = highlight ? craftUsage.find((item) => resolvedColorKey(item) === highlight) : undefined;
   const replacementNeeded = highlight ? craftPattern.reduce((count, cell, index) => {
-    if (!cell || colorKey(cell.brand ?? "MARD", cell.code) !== highlight) return count;
+    if (!cell || resolvedColorKey(cell) !== highlight) return count;
     if (replacementScope === "all") return count + 1;
     const row = Math.floor(index / craftSize);
     const column = index % craftSize;
@@ -2126,10 +2326,10 @@ export default function Home() {
     const sourceRgb = hexToRgb(highlightedUsage.color);
     const sourceWarmth = sourceRgb.r - sourceRgb.b;
     const palette = replacementBrand === "MARD"
-      ? mardColors.map((item) => ({ brand: "MARD", code: item.code, name: "MARD 参考色", hex: item.hex }))
+      ? mardColors.map((item) => ({ brand: "MARD", series: item.series, code: item.code, name: "MARD 参考色", hex: item.hex }))
       : crossBrandColors.filter((item) => item.brand === replacementBrand);
     const scored = palette
-      .filter((item) => colorKey(item.brand, item.code) !== highlight)
+      .filter((item) => colorKey(item.brand, item.code, item.series) !== highlight)
       .map((item) => {
         const rgb = hexToRgb(item.hex);
         return { ...item, color: item.hex, distance: perceptualDistance(sourceRgb, rgb), warmth: rgb.r - rgb.b };
@@ -2137,7 +2337,7 @@ export default function Home() {
       .sort((a, b) => a.distance - b.distance);
     const chosen: Array<(typeof scored)[number] & { label: string }> = [];
     const add = (label: string, candidate?: (typeof scored)[number]) => {
-      if (candidate && !chosen.some((item) => item.code === candidate.code)) chosen.push({ ...candidate, label });
+      if (candidate && !chosen.some((item) => item.code === candidate.code && item.series === candidate.series)) chosen.push({ ...candidate, label });
     };
     add("最接近", scored[0]);
     if (replacementBrand === "MARD") {
@@ -2161,16 +2361,18 @@ export default function Home() {
   const displayPattern = useMemo(() => {
     if (!replacementPreview) return craftPattern;
     return craftPattern.map((cell, index) => {
-      if (cell?.code !== replacementPreview.fromCode || (cell.brand ?? "MARD") !== replacementPreview.fromBrand) return cell;
+      if (!cell || resolvedColorKey(cell) !== colorKey(replacementPreview.fromBrand, replacementPreview.fromCode, replacementPreview.fromSeries)) return cell;
       if (replacementScope === "section") {
         const row = Math.floor(index / craftSize);
         const column = index % craftSize;
         if (row < sectionStartRow || row >= sectionStartRow + sectionHeight || column < sectionStartColumn || column >= sectionStartColumn + sectionWidth) return cell;
       }
-      return { brand: replacementPreview.brand, code: replacementPreview.toCode, color: replacementPreview.color, name: replacementPreview.name };
+      return { brand: replacementPreview.brand, series: replacementPreview.series, code: replacementPreview.toCode, color: replacementPreview.color, name: replacementPreview.name };
     });
   }, [craftPattern, craftSize, replacementPreview, replacementScope, sectionHeight, sectionStartColumn, sectionStartRow, sectionWidth]);
   const selectedCrossBrandColors = crossBrandColors.filter((item) => item.brand === selectedBrand);
+  const storeBrandCatalog = catalogPaletteForBrand(storePalette.brand);
+  const storeSeriesOptions = paletteSeries(storePalette.brand);
   const inventoryAdderCatalog = inventoryAdderBrand === "MARD"
     ? mardColors.map((item) => ({ brand: "MARD" as const, code: item.code, name: "MARD 参考色", color: item.hex, series: item.series }))
     : crossBrandColors
@@ -2225,17 +2427,125 @@ export default function Home() {
           view: patternView,
           projectCompleted,
           inventoryDebited,
+          paletteSource,
+          storePalette: paletteSource === "store" ? storePalette : undefined,
+          generationScopeLabel: paletteSourceLabel,
         };
         return [next, ...projects.filter((project) => project.id !== activeProjectId)];
       });
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [activeProjectId, colorShift, completedColors, currentProjectTitle, gridSize, ignoreStock, inventoryDebited, patternView, projectCompleted, projectsReady, selectedPattern, selectedPlan]);
+  }, [activeProjectId, colorShift, completedColors, currentProjectTitle, gridSize, ignoreStock, inventoryDebited, paletteSource, paletteSourceLabel, patternView, projectCompleted, projectsReady, selectedPattern, selectedPlan, storePalette]);
 
   function go(next: Screen) {
     setScreen(next);
     if (window.location.hash !== `#${next}`) window.history.pushState({ screen: next }, "", `#${next}`);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openCommunityPublisher(projectId?: string) {
+    if (!savedProjects.length) {
+      flash("先生成并保存一张图纸，再把它发布到社区");
+      go("create");
+      return;
+    }
+    setCommunityProjectId(projectId ?? savedProjects[0].id);
+    setCommunityDescription("");
+    setCommunityPublishCategory("其他");
+    setCommunityPublishConsent(false);
+    setShowCommunityPublisher(true);
+  }
+
+  async function publishSelectedProjectToCommunity() {
+    if (!communityPublishProject || !communityPublishConsent) return;
+    const input = {
+      projectId: communityPublishProject.id,
+      title: communityPublishProject.title,
+      description: communityDescription.trim() || `${communityPublishProject.size} × ${communityPublishProject.size} 图纸，使用 ${communityPublishProject.palette.length} 种颜色。`,
+      category: communityPublishCategory,
+      size: communityPublishProject.size,
+      beadCount: communityPublishProject.beadCount,
+      colorCount: communityPublishProject.palette.length,
+      preview: communityPublishProject.preview,
+      palette: communityPublishProject.palette.map((color) => color.color),
+    };
+    const existing = communityPosts.find((post) => post.ownedByViewer && post.projectId === communityPublishProject.id);
+    const created = createLocalCommunityPost(input);
+    const optimistic = { ...created, id: existing?.id ?? created.id };
+    setCommunityPosts((posts) => [optimistic, ...posts.filter((post) => post.id !== existing?.id)]);
+    setShowCommunityPublisher(false);
+    setCommunityPublishConsent(false);
+
+    if (!communityBackendEnabled) {
+      flash(existing ? "公开作品已更新；当前保存在本机内测社区" : "作品已加入本机内测社区");
+      return;
+    }
+    try {
+      const published = await publishCommunityPost(input);
+      setCommunityPosts((posts) => [published, ...posts.filter((post) => post.id !== optimistic.id)]);
+      setCommunityConnection("remote");
+    } catch {
+      setCommunityConnection("unavailable");
+      flash("社区服务器暂时不可用，作品已先保存在这台设备上");
+    }
+  }
+
+  async function toggleCommunityPostReaction(postId: string, reaction: CommunityReaction) {
+    const previous = communityPosts.find((post) => post.id === postId);
+    if (!previous) return;
+    const activeKey = reaction === "like" ? "likedByViewer" : "favoritedByViewer";
+    const countKey = reaction === "like" ? "likeCount" : "favoriteCount";
+    const nextActive = !previous[activeKey];
+    const apply = (post: CommunityPost) => post.id === postId ? {
+      ...post,
+      [activeKey]: nextActive,
+      [countKey]: Math.max(0, post[countKey] + (nextActive ? 1 : -1)),
+    } : post;
+    setCommunityPosts((posts) => posts.map(apply));
+    setSelectedCommunityPost((post) => post ? apply(post) : post);
+    if (!communityBackendEnabled) return;
+    try {
+      await updateCommunityReaction(postId, reaction, nextActive);
+      setCommunityConnection("remote");
+    } catch {
+      setCommunityPosts((posts) => posts.map((post) => post.id === postId ? previous : post));
+      setSelectedCommunityPost((post) => post?.id === postId ? previous : post);
+      setCommunityConnection("unavailable");
+      flash("互动没有同步成功，请稍后重试");
+    }
+  }
+
+  function commitCommunityRemoval(post: CommunityPost) {
+    if (!communityBackendEnabled) return;
+    deleteCommunityPost(post.id).then(() => setCommunityConnection("remote")).catch(() => {
+      setCommunityPosts((posts) => posts.some((item) => item.id === post.id) ? posts : [post, ...posts]);
+      setCommunityConnection("unavailable");
+      flash("没有从社区撤下，作品已经恢复");
+    });
+  }
+
+  function removeCommunityPost(post: CommunityPost) {
+    if (!post.ownedByViewer) return;
+    if (communityUndo && communityDeleteTimerRef.current !== null) {
+      window.clearTimeout(communityDeleteTimerRef.current);
+      commitCommunityRemoval(communityUndo);
+    }
+    setCommunityPosts((posts) => posts.filter((item) => item.id !== post.id));
+    setSelectedCommunityPost(null);
+    setCommunityUndo(post);
+    communityDeleteTimerRef.current = window.setTimeout(() => {
+      commitCommunityRemoval(post);
+      setCommunityUndo(null);
+      communityDeleteTimerRef.current = null;
+    }, 8000);
+  }
+
+  function undoCommunityRemoval() {
+    if (!communityUndo) return;
+    if (communityDeleteTimerRef.current !== null) window.clearTimeout(communityDeleteTimerRef.current);
+    setCommunityPosts((posts) => posts.some((post) => post.id === communityUndo.id) ? posts : [communityUndo, ...posts]);
+    setCommunityUndo(null);
+    communityDeleteTimerRef.current = null;
   }
 
   function markInventoryConfirmed() {
@@ -2358,7 +2668,7 @@ export default function Home() {
     const restoredCompletedColors = (project.completedColors ?? []).map((key) => {
       if (key.includes("::")) return key;
       const match = project.palette.find((item) => item.code === key);
-      return match ? colorKey(match.brand ?? "MARD", match.code) : key;
+      return match ? resolvedColorKey(match) : key;
     });
     setGeneratedPatterns({ zero: cells, balance: cells, quality: cells });
     setHasComparablePlans(false);
@@ -2367,7 +2677,9 @@ export default function Home() {
     setSelectedPlan(project.plan);
     setStrategy(project.plan);
     setCompletedColors(restoredCompletedColors);
-    setIgnoreStock(project.ignoreStock);
+    const restoredSource = project.paletteSource ?? (project.ignoreStock ? "reference" : "inventory");
+    setPaletteSource(restoredSource);
+    if (restoredSource === "store" && isStorePalettePreset(project.storePalette)) setStorePalette(project.storePalette);
     setColorShift(project.colorShift);
     setPatternView(project.view ?? (project.size > 58 ? "section" : "chart"));
     setProjectCompleted(project.projectCompleted);
@@ -2416,7 +2728,7 @@ export default function Home() {
     return { format: "yilihua-project", version: 1, exportedAt: Date.now(), project, inventory, preferredColorKeys: activePreferredColorKeys };
   }
 
-  function downloadPortableFile(payload: PortableProjectPackage | PortableBackupPackage, filename: string) {
+  function downloadPortableFile(payload: PortableProjectPackage | PortableBackupPackage | StorePalettePackage, filename: string) {
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2424,6 +2736,146 @@ export default function Home() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  function changeStorePaletteBrand(brand: PaletteBrand) {
+    setStorePalette((current) => ({
+      ...makeStorePalettePreset(brand, current.name),
+      id: current.id,
+      createdAt: current.createdAt,
+    }));
+    setStoreExcludeInput("");
+  }
+
+  function updateStoreRange(id: string, update: Partial<StoreRange>) {
+    setStorePalette((current) => ({
+      ...current,
+      updatedAt: Date.now(),
+      ranges: current.ranges.map((range) => {
+        if (range.id !== id) return range;
+        if (update.series && update.series !== range.series) return makeStoreRange(current.brand, update.series, range.id);
+        return { ...range, ...update };
+      }),
+    }));
+  }
+
+  function addStoreRange() {
+    setStorePalette((current) => {
+      const used = new Set(current.ranges.map((range) => range.series));
+      const nextSeries = paletteSeries(current.brand).find((series) => !used.has(series)) ?? paletteSeries(current.brand)[0];
+      return { ...current, ranges: [...current.ranges, makeStoreRange(current.brand, nextSeries)], updatedAt: Date.now() };
+    });
+  }
+
+  function selectWholeStoreSeries(id: string) {
+    setStorePalette((current) => ({
+      ...current,
+      updatedAt: Date.now(),
+      ranges: current.ranges.map((range) => {
+        if (range.id !== id) return range;
+        const colors = catalogPaletteForBrand(current.brand).filter((item) => item.series === range.series);
+        return { ...range, fromCode: colors[0]?.code ?? "", toCode: colors[colors.length - 1]?.code ?? "" };
+      }),
+    }));
+  }
+
+  function toggleStoreColor(color: CatalogPaletteColor) {
+    const key = catalogColorKey(color.brand, color.series, color.code);
+    setStorePalette((current) => ({
+      ...current,
+      excludedKeys: current.excludedKeys.includes(key) ? current.excludedKeys.filter((item) => item !== key) : [...current.excludedKeys, key],
+      updatedAt: Date.now(),
+    }));
+  }
+
+  function applyBulkStoreExclusions() {
+    const codes = [...new Set(storeExcludeInput.split(/[\s,，、]+/).map((code) => code.trim().toLowerCase()).filter(Boolean))];
+    if (!codes.length) return;
+    const matches = storePaletteUnion.filter((color) => codes.includes(color.code.toLowerCase()));
+    const matchedCodes = new Set(matches.map((color) => color.code.toLowerCase()));
+    setStorePalette((current) => ({
+      ...current,
+      excludedKeys: [...new Set([...current.excludedKeys, ...matches.map((color) => catalogColorKey(color.brand, color.series, color.code))])],
+      updatedAt: Date.now(),
+    }));
+    setStoreExcludeInput("");
+    const missing = codes.filter((code) => !matchedCodes.has(code));
+    flash(missing.length ? `已排除 ${matches.length} 色；未在当前范围找到 ${missing.join("、")}` : `已排除 ${matches.length} 个店内缺货色号`);
+  }
+
+  function applyStorePalette(preset = storePalette) {
+    const resolved = resolveStorePalette(preset);
+    if (resolved.invalidRangeIds.length) {
+      flash("有区间的起止色号不在当前系列，请重新选择");
+      return;
+    }
+    if (resolved.colors.length < 3) {
+      flash(`当前只有 ${resolved.colors.length} 种可用颜色，至少需要 3 种`);
+      return;
+    }
+    const normalized = { ...preset, ranges: resolved.normalizedRanges, updatedAt: Date.now() };
+    setStorePalette(normalized);
+    setPaletteSource("store");
+    setShowStorePalette(false);
+    go("create");
+    flash(`已锁定 ${preset.brand} 店内可买的 ${resolved.colors.length} 个色号`);
+  }
+
+  function saveStorePreset() {
+    const resolved = resolveStorePalette(storePalette);
+    if (resolved.colors.length < 3 || resolved.invalidRangeIds.length) {
+      flash("至少保留 3 个有效色号后才能保存预设");
+      return;
+    }
+    const now = Date.now();
+    const saved: StorePalettePreset = {
+      ...storePalette,
+      id: `store-${now}`,
+      name: storePresetName.trim() || `${storePalette.brand} 店内色号`,
+      ranges: resolved.normalizedRanges,
+      createdAt: now,
+      updatedAt: now,
+    };
+    setStorePresets((presets) => [saved, ...presets]);
+    setStorePalette(saved);
+    setStorePresetName("");
+    flash(`“${saved.name}”已保存在本机`);
+  }
+
+  function applySavedStorePreset(preset: StorePalettePreset) {
+    setStorePalette({ ...preset, ranges: preset.ranges.map((range) => ({ ...range })), excludedKeys: [...preset.excludedKeys] });
+    applyStorePalette(preset);
+  }
+
+  function deleteStorePreset(id: string) {
+    const preset = storePresets.find((item) => item.id === id);
+    if (!window.confirm(`删除“${preset?.name ?? "这个店铺预设"}”吗？`)) return;
+    setStorePresets((presets) => presets.filter((item) => item.id !== id));
+  }
+
+  function exportStorePreset(preset = storePalette) {
+    const payload: StorePalettePackage = { format: "yilihua-store-palette", version: 1, exportedAt: Date.now(), preset };
+    downloadPortableFile(payload, `${portableFilename(preset.name || `${preset.brand}店内色号`)}.yilihua-store`);
+    flash("店铺色号预设已导出");
+  }
+
+  async function importStorePreset(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      if (file.size > 512 * 1024) throw new Error("size");
+      const parsed = JSON.parse(await file.text()) as Partial<StorePalettePackage>;
+      if (parsed.format !== "yilihua-store-palette" || parsed.version !== 1 || !isStorePalettePreset(parsed.preset)) throw new Error("format");
+      const now = Date.now();
+      const preset = { ...parsed.preset, id: `store-${now}`, createdAt: now, updatedAt: now };
+      setStorePresets((presets) => [preset, ...presets]);
+      setStorePalette(preset);
+      flash(`已导入“${preset.name}”`);
+    } catch (error) {
+      flash((error as Error).message === "size" ? "预设文件超过 512 KB" : "这不是有效的一粒画店铺色号预设");
+    } finally {
+      event.target.value = "";
+    }
   }
 
   function exportProjectPackage(project: SavedProject) {
@@ -2485,7 +2937,7 @@ export default function Home() {
       setInventory((items) => {
         const next = items.map((item) => ({ ...item }));
         incomingInventory.forEach((incoming) => {
-          const existing = next.find((item) => colorKey(item.brand, item.code) === colorKey(incoming.brand, incoming.code));
+          const existing = next.find((item) => colorKey(item.brand, item.code, item.series) === colorKey(incoming.brand, incoming.code, incoming.series));
           if (existing) {
             existing.count = Math.max(existing.count, Math.max(0, Math.round(incoming.count)));
             existing.safe = Math.max(existing.safe, Math.max(0, Math.round(incoming.safe)));
@@ -2506,40 +2958,42 @@ export default function Home() {
     }
   }
 
-  function adjustInventory(brand: string, code: string, change: number) {
+  function adjustInventory(brand: string, code: string, change: number, series?: string) {
     markInventoryConfirmed();
-    setInventory((items) => items.map((item) => item.brand === brand && item.code === code ? { ...item, count: Math.max(0, item.count + change) } : item));
+    const key = colorKey(brand, code, series);
+    setInventory((items) => items.map((item) => colorKey(item.brand, item.code, item.series) === key ? { ...item, count: Math.max(0, item.count + change) } : item));
   }
 
-  function setInventoryAmount(brand: string, code: string, field: "count" | "safe", value: number) {
+  function setInventoryAmount(brand: string, code: string, field: "count" | "safe", value: number, series?: string) {
     markInventoryConfirmed();
     const nextValue = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
-    setInventory((items) => items.map((item) => item.brand === brand && item.code === code ? { ...item, [field]: nextValue } : item));
+    const key = colorKey(brand, code, series);
+    setInventory((items) => items.map((item) => colorKey(item.brand, item.code, item.series) === key ? { ...item, [field]: nextValue } : item));
   }
 
-  function togglePreferredColor(brand: string, code: string) {
-    const key = colorKey(brand, code);
+  function togglePreferredColor(brand: string, code: string, series?: string) {
+    const key = colorKey(brand, code, series);
     setPreferredColorKeys((keys) => keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]);
   }
 
-  function removeInventoryColor(brand: string, code: string) {
-    const item = inventory.find((entry) => entry.brand === brand && entry.code === code);
+  function removeInventoryColor(brand: string, code: string, series?: string) {
+    const key = colorKey(brand, code, series);
+    const item = inventory.find((entry) => colorKey(entry.brand, entry.code, entry.series) === key);
     if (!item || !window.confirm(`从库存中删除 ${brand} ${code}「${item.name}」吗？`)) return;
-    const key = colorKey(brand, code);
-    setInventory((items) => items.filter((entry) => colorKey(entry.brand, entry.code) !== key));
+    setInventory((items) => items.filter((entry) => colorKey(entry.brand, entry.code, entry.series) !== key));
     setPreferredColorKeys((keys) => keys.filter((entry) => entry !== key));
     setSelectedColorKeys((keys) => keys.filter((entry) => entry !== key));
     flash(`${brand} ${code} 已移出库存`);
   }
 
-  function addInventoryColor(item: { brand: string; code: string; name: string; color: string }) {
+  function addInventoryColor(item: { brand: string; series?: string; code: string; name: string; color: string }) {
     markInventoryConfirmed();
     const count = Math.max(0, Math.round(inventoryAddCount));
     const safe = Math.max(0, Math.round(inventoryAddSafe));
-    const key = colorKey(item.brand, item.code);
+    const key = colorKey(item.brand, item.code, item.series);
     const existed = inventoryKeys.has(key);
     setInventory((items) => {
-      const existing = items.find((entry) => colorKey(entry.brand, entry.code) === key);
+      const existing = items.find((entry) => colorKey(entry.brand, entry.code, entry.series) === key);
       if (existing) return items.map((entry) => entry === existing ? { ...entry, count: entry.count + count, safe } : entry);
       return [...items, { ...item, count, safe }];
     });
@@ -2547,8 +3001,8 @@ export default function Home() {
   }
 
   function exportInventory() {
-    const header = "品牌,色号,颜色名称,HEX,数量,安全库存";
-    const rows = inventory.map((item) => [item.brand, item.code, item.name, item.color, item.count, item.safe].join(","));
+    const header = "品牌,系列,色号,颜色名称,HEX,数量,安全库存";
+    const rows = inventory.map((item) => [item.brand, item.series ?? "", item.code, item.name, item.color, item.count, item.safe].join(","));
     const blob = new Blob([`\uFEFF${[header, ...rows].join("\r\n")}`], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2567,8 +3021,9 @@ export default function Home() {
       const text = (await file.text()).replace(/^\uFEFF/, "");
       const lines = text.split(/\r?\n/).filter(Boolean);
       const imported = lines.slice(1).map((line) => {
-        const [brand, code, name, color, count, safe] = line.split(",").map((value) => value.trim());
-        return { brand: brand || "MARD", code, name: name || code, color, count: Number(count), safe: Number(safe) } as Swatch;
+        const columns = line.split(",").map((value) => value.trim());
+        const [brand, series, code, name, color, count, safe] = columns.length >= 7 ? columns : [columns[0], "", ...columns.slice(1)];
+        return { brand: brand || "MARD", series: series || undefined, code, name: name || code, color, count: Number(count), safe: Number(safe) } as Swatch;
       }).filter((item) => item.code && /^#[0-9a-f]{6}$/i.test(item.color) && Number.isFinite(item.count) && Number.isFinite(item.safe));
       if (!imported.length) throw new Error("empty");
       if (!window.confirm(`将用 CSV 中的 ${imported.length} 个色号替换当前 ${inventory.length} 个库存色号。继续吗？`)) return;
@@ -2593,8 +3048,8 @@ export default function Home() {
       return;
     }
     if (!ignoreStock && !inventoryDebited) {
-      const used = new Map(craftUsage.map((item) => [`${item.brand}::${item.code}`, item.count]));
-      setInventory((items) => items.map((item) => ({ ...item, count: Math.max(0, item.count - (used.get(`${item.brand}::${item.code}`) ?? 0)) })));
+      const used = new Map(craftUsage.map((item) => [resolvedColorKey(item), item.count]));
+      setInventory((items) => items.map((item) => ({ ...item, count: Math.max(0, item.count - (used.get(colorKey(item.brand, item.code, item.series)) ?? 0)) })));
       setInventoryDebited(true);
     }
     setProjectCompleted(true);
@@ -2602,7 +3057,7 @@ export default function Home() {
   }
 
   function openShoppingList() {
-    setSelectedPurchaseKeys(purchaseItems.map((item) => `${item.brand}::${item.code}`));
+    setSelectedPurchaseKeys(purchaseItems.map(resolvedColorKey));
     setShowShoppingList(true);
   }
 
@@ -2618,11 +3073,12 @@ export default function Home() {
     setInventory((items) => {
       const next = items.map((item) => ({ ...item }));
       selectedPurchaseItems.forEach((purchase) => {
-        const existingIndex = next.findIndex((item) => item.brand === purchase.brand && item.code === purchase.code);
+        const purchaseKey = resolvedColorKey(purchase);
+        const existingIndex = next.findIndex((item) => colorKey(item.brand, item.code, item.series) === purchaseKey);
         if (existingIndex >= 0) {
           next[existingIndex].count += purchase.shortage;
         } else {
-          next.push({ brand: purchase.brand, code: purchase.code, name: purchase.name, color: purchase.color, count: purchase.shortage, safe: 0 });
+          next.push({ brand: purchase.brand, series: purchase.series, code: purchase.code, name: purchase.name, color: purchase.color, count: purchase.shortage, safe: 0 });
         }
       });
       return next;
@@ -2642,11 +3098,11 @@ export default function Home() {
 
   function applyBatchReplacements() {
     if (!generatedPatterns || !selectedPattern || !resolvedBatchReplacements.length) return;
-    const replacements = new Map(resolvedBatchReplacements.map((item) => [`${item.source.brand}::${item.source.code}`, item.target!]));
+    const replacements = new Map(resolvedBatchReplacements.map((item) => [resolvedColorKey(item.source), item.target!]));
     const nextCells = selectedPattern.map((cell) => {
       if (!cell) return cell;
-      const target = replacements.get(`${cell.brand ?? "MARD"}::${cell.code}`);
-      return target ? { brand: target.brand, code: target.code, color: target.color, name: target.name } : cell;
+      const target = replacements.get(resolvedColorKey(cell));
+      return target ? { brand: target.brand, series: target.series, code: target.code, color: target.color, name: target.name } : cell;
     });
     setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: "批量换色", toCode: `${resolvedBatchReplacements.length} 组` }]);
     setRedoHistory([]);
@@ -2699,23 +3155,24 @@ export default function Home() {
     flash("采购清单已导出");
   }
 
-  function addCatalogColor(code: string, color: string) {
+  function addCatalogColor(code: string, color: string, series: string) {
     const supported = selectedBrand === "MARD" || selectedCrossBrandColors.length > 0;
     if (!supported) {
       flash(`${selectedBrand} 色卡仍在校准，暂不写入正式库存`);
       return;
     }
-    const catalogItem = catalogSource.find((item) => item.code === code);
+    const catalogItem = catalogSource.find((item) => item.code === code && item.series === series);
+    const key = colorKey(selectedBrand, code, series);
     setInventory((items) => {
-      const existing = items.find((item) => item.brand === selectedBrand && item.code === code);
+      const existing = items.find((item) => colorKey(item.brand, item.code, item.series) === key);
       if (existing) return items.map((item) => item === existing ? { ...item, count: item.count + 100 } : item);
-      return [...items, { brand: selectedBrand, code, name: catalogItem?.name ?? code, color, count: 100, safe: 20 }];
+      return [...items, { brand: selectedBrand, series, code, name: catalogItem?.name ?? code, color, count: 100, safe: 20 }];
     });
     flash(`${selectedBrand} ${code} 已加入库存，默认 100 颗`);
   }
 
-  function toggleGenerationColor(brand: string, code: string) {
-    const key = colorKey(brand, code);
+  function toggleGenerationColor(brand: string, code: string, series?: string) {
+    const key = colorKey(brand, code, series);
     setSelectedColorKeys((keys) => keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]);
   }
 
@@ -2925,19 +3382,19 @@ export default function Home() {
   function applyReplacement() {
     if (!generatedPatterns || !selectedPattern || !replacementPreview) return;
     const nextCells = selectedPattern.map((cell, index) => {
-      if (cell?.code !== replacementPreview.fromCode || (cell.brand ?? "MARD") !== replacementPreview.fromBrand) return cell;
+      if (!cell || resolvedColorKey(cell) !== colorKey(replacementPreview.fromBrand, replacementPreview.fromCode, replacementPreview.fromSeries)) return cell;
       if (replacementScope === "section") {
         const row = Math.floor(index / craftSize);
         const column = index % craftSize;
         if (row < sectionStartRow || row >= sectionStartRow + sectionHeight || column < sectionStartColumn || column >= sectionStartColumn + sectionWidth) return cell;
       }
-      return { brand: replacementPreview.brand, code: replacementPreview.toCode, color: replacementPreview.color, name: replacementPreview.name };
+      return { brand: replacementPreview.brand, series: replacementPreview.series, code: replacementPreview.toCode, color: replacementPreview.color, name: replacementPreview.name };
     });
-    setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: replacementPreview.fromCode, toCode: replacementPreview.toCode, fromBrand: replacementPreview.fromBrand, toBrand: replacementPreview.brand }]);
+    setReplacementHistory((history) => [...history.slice(-9), { plan: selectedPlan, cells: selectedPattern, fromCode: replacementPreview.fromCode, toCode: replacementPreview.toCode, fromBrand: replacementPreview.fromBrand, fromSeries: replacementPreview.fromSeries, toBrand: replacementPreview.brand, toSeries: replacementPreview.series }]);
     setRedoHistory([]);
     setGeneratedPatterns({ ...generatedPatterns, [selectedPlan]: nextCells });
-    setCompletedColors((keys) => keys.filter((key) => key !== colorKey(replacementPreview.fromBrand, replacementPreview.fromCode) && key !== colorKey(replacementPreview.brand, replacementPreview.toCode)));
-    setHighlight(colorKey(replacementPreview.brand, replacementPreview.toCode));
+    setCompletedColors((keys) => keys.filter((key) => key !== colorKey(replacementPreview.fromBrand, replacementPreview.fromCode, replacementPreview.fromSeries) && key !== colorKey(replacementPreview.brand, replacementPreview.toCode, replacementPreview.series)));
+    setHighlight(colorKey(replacementPreview.brand, replacementPreview.toCode, replacementPreview.series));
     setReplacementPreview(null);
     setProjectCompleted(false);
     flash(`已将 ${replacementNeeded} 格替换为 ${replacementPreview.brand} ${replacementPreview.toCode}`);
@@ -2951,7 +3408,7 @@ export default function Home() {
     setGeneratedPatterns((patterns) => patterns ? { ...patterns, [latest.plan]: latest.cells } : patterns);
     setSelectedPlan(latest.plan);
     setCellSelection(null);
-    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" || latest.fromCode === "手动修图" || latest.fromCode === "区域填充" || latest.fromCode === "连续涂画" || latest.fromCode === "框选填色" || latest.fromCode === "框选清空" ? null : colorKey(latest.fromBrand ?? "MARD", latest.fromCode));
+    setHighlight(latest.fromCode === "批量换色" || latest.fromCode === "一键去杂色" || latest.fromCode === "手动修图" || latest.fromCode === "区域填充" || latest.fromCode === "连续涂画" || latest.fromCode === "框选填色" || latest.fromCode === "框选清空" ? null : colorKey(latest.fromBrand ?? "MARD", latest.fromCode, latest.fromSeries));
     setReplacementPreview(null);
     setReplacementHistory((history) => history.slice(0, -1));
     setCompletedColors([]);
@@ -2981,28 +3438,37 @@ export default function Home() {
       fileRef.current?.click();
       return;
     }
-    if (activeSelectedColorKeys.length > 0 && activeSelectedColorKeys.length < 3) {
+    if (paletteSource === "inventory" && activeSelectedColorKeys.length > 0 && activeSelectedColorKeys.length < 3) {
       flash("指定用色至少选择 3 种，或清空后让系统自动配色");
       return;
     }
-    if (!ignoreStock && !inventory.some((item) => item.count > item.safe)) {
-      flash("库存里还没有可用颜色；请先录入豆子，或开启无视库存使用 MARD 参考色库");
+    if (paletteSource === "inventory" && !inventory.some((item) => item.count > item.safe)) {
+      flash("库存里还没有可用颜色；可以改用店内色号或完整参考色卡");
+      return;
+    }
+    if (paletteSource === "store" && storePaletteResult.colors.length < 3) {
+      flash("店内色号至少需要 3 种，请先调整范围或减少排除项");
+      setShowStorePalette(true);
       return;
     }
     setIsGenerating(true);
     try {
       const prepared = await preparePatternPixels(uploadedImage, gridSize, colorShift, imageFit, imageSampling);
       setGenerationReference(prepared);
-      const zero = generatePattern(prepared, "zero", ignoreStock, inventory, maxColors, activeSelectedColorKeys, activePreferredColorKeys);
+      const inventorySelection = paletteSource === "inventory" ? activeSelectedColorKeys : [];
+      const inventoryPreferences = paletteSource === "inventory" ? activePreferredColorKeys : [];
+      const zero = generatePattern(prepared, "zero", inventory, maxColors, inventorySelection, inventoryPreferences, generationPalette);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      const balance = generatePattern(prepared, "balance", ignoreStock, inventory, maxColors, activeSelectedColorKeys, activePreferredColorKeys);
+      const balance = generatePattern(prepared, "balance", inventory, maxColors, inventorySelection, inventoryPreferences, generationPalette);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      const quality = generatePattern(prepared, "quality", ignoreStock, inventory, maxColors, activeSelectedColorKeys, activePreferredColorKeys);
-      setGeneratedPatterns({ zero, balance, quality });
-      setHasComparablePlans(true);
+      const quality = generatePattern(prepared, "quality", inventory, maxColors, inventorySelection, inventoryPreferences, generationPalette);
+      const nextPatterns = { zero, balance, quality };
+      const canCompare = generatedPlansDiffer(nextPatterns);
+      setGeneratedPatterns(nextPatterns);
+      setHasComparablePlans(canCompare);
       setActiveProjectId(`project-${Date.now()}`);
       setInventoryDebited(false);
-      setCurrentProjectTitle(`库存适配图纸 · ${gridSize}×${gridSize}`);
+      setCurrentProjectTitle(`${paletteSource === "store" ? `${storePalette.brand} 店内限色` : paletteSource === "reference" ? "MARD 参考色卡" : "库存适配"}图纸 · ${gridSize}×${gridSize}`);
       setReplacementPreview(null);
       setReplacementHistory([]);
       setRedoHistory([]);
@@ -3010,8 +3476,8 @@ export default function Home() {
       setCellSelection(null);
       editStrokeRef.current = null;
       setEditColor(null);
-      setSelectedPlan(ignoreStock ? "quality" : strategy);
-      go("plans");
+      setSelectedPlan(paletteSource === "inventory" ? strategy : "quality");
+      go(canCompare ? "plans" : "craft");
     } catch {
       flash("图片处理失败，请换一张图片重试");
     } finally {
@@ -3092,13 +3558,14 @@ export default function Home() {
         <BrandMark onClick={() => go("home")} />
         <nav className="desktop-nav" aria-label="主导航">
           <button className={screen === "home" ? "active" : ""} aria-current={screen === "home" ? "page" : undefined} onClick={() => go("home")}>首页</button>
+          <button className={screen === "community" ? "active" : ""} aria-current={screen === "community" ? "page" : undefined} onClick={() => go("community")}>社区</button>
           <button className={["create", "plans"].includes(screen) ? "active" : ""} aria-current={["create", "plans"].includes(screen) ? "page" : undefined} onClick={() => go("create")}>开始创作</button>
           <button className={screen === "inventory" ? "active" : ""} aria-current={screen === "inventory" ? "page" : undefined} onClick={() => go("inventory")}>豆子库存</button>
           <button className={screen === "catalog" ? "active" : ""} aria-current={screen === "catalog" ? "page" : undefined} onClick={() => go("catalog")}>品牌色库</button>
           {generatedPatterns && <button className={screen === "craft" ? "active" : ""} aria-current={screen === "craft" ? "page" : undefined} onClick={() => go("craft")}>继续制作</button>}
         </nav>
         <div className="top-actions">
-          <span className="release-pill">正式版 1.0</span>
+          <span className="release-pill">2.0 内测版</span>
           <button className="help-pill" onClick={() => setShowHelp(true)}>帮助</button>
           <button className="project-pill" onClick={() => setShowProjects(true)}><span>▦</span><b>作品</b><em>{savedProjects.length}</em></button>
           <span className="stock-pill"><i /> {totalStock.toLocaleString()} 颗</span>
@@ -3121,16 +3588,16 @@ export default function Home() {
               <h2>把喜欢，<br />一粒粒拼出来</h2>
               <p>上传图片，自动变成能看清、能照着做的拼豆图纸。画布、颜色和品牌色号都可以继续调整。</p>
               <div className="product-launch-actions">
-                <button className="is-primary" onClick={() => { setIgnoreStock(false); homeFileRef.current?.click(); }}>
+                <button className="is-primary" onClick={() => { setPaletteSource("inventory"); homeFileRef.current?.click(); }}>
                   <span className="product-action-icon" aria-hidden="true"><i /><i /><i /><i /></span>
                   <span><strong>开始图片转拼豆</strong><small>优先使用手头已有的豆子</small></span><b>→</b>
                 </button>
-                <button onClick={() => { setIgnoreStock(true); homeFileRef.current?.click(); }}>
+                <button onClick={() => { setPaletteSource("reference"); homeFileRef.current?.click(); }}>
                   <span className="product-action-icon is-neutral" aria-hidden="true"><i /><i /><i /><i /></span>
                   <span><strong>无视库存生成</strong><small>使用完整色库，尽量保留原图颜色</small></span><b>→</b>
                 </button>
               </div>
-              <div className="upload-source-actions home-upload-sources"><span>也可以</span><button onClick={() => { setIgnoreStock(false); cameraFileRef.current?.click(); }}>◎ 直接拍照</button><button onClick={pasteImage}>▣ 粘贴截图</button></div>
+              <div className="upload-source-actions home-upload-sources"><span>也可以</span><button onClick={() => { setPaletteSource("inventory"); cameraFileRef.current?.click(); }}>◎ 直接拍照</button><button onClick={pasteImage}>▣ 粘贴截图</button></div>
               <div className="product-hero-stats">
                 <div><strong>{inventory.length}</strong><span>库存颜色</span></div>
                 <div><strong>{brandCatalog.length}</strong><span>常用品牌</span></div>
@@ -3173,8 +3640,8 @@ export default function Home() {
 
           <div className="home-section-title"><span>快捷创作</span><p>从最常用的操作直接开始</p></div>
           <section className="product-shortcuts" aria-label="快捷创作">
-            <button onClick={() => { setIgnoreStock(false); homeFileRef.current?.click(); }}><span className="product-shortcut-icon is-upload">图</span><span><strong>图转拼豆</strong><small>照片一键转图纸</small></span><b>→</b></button>
-            <button onClick={() => { setIgnoreStock(true); homeFileRef.current?.click(); }}><span className="product-shortcut-icon is-color">色</span><span><strong>MARD 色库生成</strong><small>暂时无视库存</small></span><b>→</b></button>
+            <button onClick={() => { setPaletteSource("inventory"); homeFileRef.current?.click(); }}><span className="product-shortcut-icon is-upload">图</span><span><strong>图转拼豆</strong><small>照片一键转图纸</small></span><b>→</b></button>
+            <button onClick={() => { setPaletteSource("reference"); homeFileRef.current?.click(); }}><span className="product-shortcut-icon is-color">色</span><span><strong>MARD 色库生成</strong><small>暂时不看库存</small></span><b>→</b></button>
             <button onClick={() => go("inventory")}><span className="product-shortcut-icon is-stock">库</span><span><strong>库存与色号</strong><small>{inventory.length} 色 · {brandCatalog.length} 品牌</small></span><b>→</b></button>
             <button disabled={!savedProjects.length} onClick={() => savedProjects[0] && restoreProject(savedProjects[0])}><span className="product-shortcut-icon is-craft">作</span><span><strong>{savedProjects.length ? "继续制作" : "还没有作品"}</strong><small>{savedProjects.length ? "图纸、分区与进度" : "生成后会自动保存在这里"}</small></span><b>→</b></button>
           </section>
@@ -3221,7 +3688,7 @@ export default function Home() {
                   onClick={() => {
                     setGridSize(template.size);
                     setMaxColors(template.colors);
-                    setIgnoreStock(false);
+                    setPaletteSource("inventory");
                     homeFileRef.current?.click();
                   }}
                 >
@@ -3239,7 +3706,7 @@ export default function Home() {
 
           <footer className="formal-home-footer">
             <div><b>图片只在你的设备上处理</b><span>无需登录 · 自动保存草稿 · 支持离线打开 · 可导出项目包备份</span></div>
-            <div><button onClick={() => setShowHelp(true)}>使用帮助</button><button onClick={() => setShowDevicePanel(true)}>数据与隐私</button><button onClick={() => go("catalog")}>色卡来源</button><span>一粒画 1.0</span></div>
+            <div><button onClick={() => setShowHelp(true)}>使用帮助</button><button onClick={() => setShowDevicePanel(true)}>数据与隐私</button><button onClick={() => go("catalog")}>色卡来源</button><span>一粒画 2.0 内测版</span></div>
           </footer>
 
           {false && <><section className="studio-hero">
@@ -3377,6 +3844,84 @@ export default function Home() {
         </div>
       )}
 
+      {screen === "community" && (
+        <div className="page community-page" aria-busy={!communityReady}>
+          <header className="community-heading">
+            <div><h1>拼豆社区</h1><p>看看大家正在做什么，也把自己的图纸放进作品流。</p></div>
+            <button className="primary" onClick={() => openCommunityPublisher()}>发布我的图纸</button>
+          </header>
+
+          <section className="community-beta-note" aria-label="社区内测状态">
+            <span>邀请内测</span>
+            <p><b>{communityConnection === "remote" ? "社区服务器已连接" : communityConnection === "connecting" ? "正在连接社区" : communityConnection === "unavailable" ? "社区服务器暂不可用" : "当前为本机社区预览"}</b><small>{communityConnection === "remote" ? "发布、点赞和收藏会同步到社区。" : "可以完整体验发布与互动；配置社区服务地址后自动切换为跨设备数据。"}</small></p>
+          </section>
+
+          {showCommunityPublisher && communityPublishProject && (
+            <section className="community-publisher" aria-label="发布图纸到社区">
+              <header><div><h2>发布一张图纸</h2><p>社区只使用图纸预览、色板和说明，不发布你的原始图片。</p></div><button aria-label="收起发布面板" onClick={() => setShowCommunityPublisher(false)}>×</button></header>
+              <div className="community-publisher-body">
+                <div className="community-publisher-preview"><CommunityArtwork post={{ ...createLocalCommunityPost({ projectId: communityPublishProject.id, title: communityPublishProject.title, description: "", category: communityPublishCategory, size: communityPublishProject.size, beadCount: communityPublishProject.beadCount, colorCount: communityPublishProject.palette.length, preview: communityPublishProject.preview, palette: communityPublishProject.palette.map((item) => item.color) }), id: `publish-preview-${communityPublishProject.id}` }} /><span><b>{communityPublishProject.title}</b><small>{communityPublishProject.size} × {communityPublishProject.size} · {communityPublishProject.palette.length} 色 · {communityPublishProject.beadCount.toLocaleString()} 颗</small></span></div>
+                <div className="community-publisher-fields">
+                  <label><span>选择作品</span><select value={communityPublishProject.id} onChange={(event) => setCommunityProjectId(event.target.value)}>{savedProjects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select></label>
+                  <label><span>作品分类</span><select value={communityPublishCategory} onChange={(event) => setCommunityPublishCategory(event.target.value as CommunityCategory)}>{communityCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
+                  <label className="community-description"><span>创作说明</span><textarea maxLength={180} value={communityDescription} onChange={(event) => setCommunityDescription(event.target.value)} placeholder="例如：调整了哪些颜色，适合多大的底板" /><small>{communityDescription.length} / 180</small></label>
+                  <label className="community-consent"><input type="checkbox" checked={communityPublishConsent} onChange={(event) => setCommunityPublishConsent(event.target.checked)} /><span>我知道这张图纸会在社区公开，其他人可以查看和收藏。</span></label>
+                  <div className="community-publisher-actions"><button className="secondary" onClick={() => setShowCommunityPublisher(false)}>暂不发布</button><button className="primary" disabled={!communityPublishConsent} onClick={publishSelectedProjectToCommunity}>{communityPosts.some((post) => post.ownedByViewer && post.projectId === communityPublishProject.id) ? "更新公开作品" : "确认公开发布"}</button></div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          <section className="community-toolbar" aria-label="筛选社区作品">
+            <div className="community-tabs" role="group" aria-label="作品范围">
+              {([['discover', '发现'], ['latest', '最新'], ['favorites', `收藏 ${favoriteCommunityCount}`], ['mine', `我的 ${ownedCommunityCount}`]] as Array<[CommunityFilter, string]>).map(([value, label]) => <button key={value} className={communityFilter === value ? "active" : ""} aria-pressed={communityFilter === value} onClick={() => setCommunityFilter(value)}>{label}</button>)}
+            </div>
+            <label className="community-search"><span>搜索作品</span><input value={communityQuery} onChange={(event) => setCommunityQuery(event.target.value)} placeholder="名称、作者或分类" /></label>
+          </section>
+
+          <div className="community-category-row" aria-label="按分类浏览">
+            <button className={communityCategory === "all" ? "active" : ""} onClick={() => setCommunityCategory("all")}>全部</button>
+            {communityCategories.map((category) => <button key={category} className={communityCategory === category ? "active" : ""} onClick={() => setCommunityCategory(category)}>{category}</button>)}
+          </div>
+
+          <div className="community-layout">
+            <section className="community-feed" aria-live="polite">
+              <div className="community-feed-head"><div><h2>{communityFilter === "favorites" ? "我收藏的图纸" : communityFilter === "mine" ? "我的公开作品" : communityFilter === "latest" ? "最新发布" : "内测作品流"}</h2><p>{visibleCommunityPosts.length} 张图纸</p></div><span>点开图纸可以查看用色</span></div>
+              {visibleCommunityPosts.length ? <div className="community-grid">
+                {visibleCommunityPosts.map((post, index) => (
+                  <article className={`community-card ${index === 0 && communityFilter === "discover" ? "featured" : ""}`} key={post.id}>
+                    <button className="community-card-preview" onClick={() => setSelectedCommunityPost(post)} aria-label={`查看${post.title}`}><CommunityArtwork post={post} /></button>
+                    <div className="community-card-copy">
+                      <div className="community-card-byline"><span>{post.officialSample ? "官方示例" : post.ownedByViewer ? "我发布的" : post.authorNickname}</span><time dateTime={new Date(post.publishedAt).toISOString()}>{new Date(post.publishedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</time></div>
+                      <div className="community-card-title"><h3>{post.title}</h3><p>{post.description}</p></div>
+                      <div className="community-card-meta"><span>{post.size} × {post.size}</span><span>{post.colorCount} 色</span><span>{post.beadCount.toLocaleString()} 颗</span></div>
+                      <div className="community-card-actions"><button className={post.likedByViewer ? "active" : ""} aria-pressed={post.likedByViewer} onClick={() => toggleCommunityPostReaction(post.id, "like")}>赞 {post.likeCount}</button><button className={post.favoritedByViewer ? "active" : ""} aria-pressed={post.favoritedByViewer} onClick={() => toggleCommunityPostReaction(post.id, "favorite")}>{post.favoritedByViewer ? "已收藏" : "收藏"} {post.favoriteCount}</button>{post.ownedByViewer && <button className="remove" onClick={() => removeCommunityPost(post)}>撤下</button>}</div>
+                    </div>
+                  </article>
+                ))}
+              </div> : <div className="community-empty"><span>暂时没有符合条件的图纸。</span><p>{communityFilter === "mine" ? "从本机作品里选择一张公开发布。" : communityFilter === "favorites" ? "浏览作品流，把想做的图纸收藏起来。" : "换一个分类或清空搜索条件。"}</p><button onClick={() => communityFilter === "mine" ? openCommunityPublisher() : (setCommunityFilter("discover"), setCommunityCategory("all"), setCommunityQuery(""))}>{communityFilter === "mine" ? "发布图纸" : "查看全部"}</button></div>}
+            </section>
+
+            <aside className="community-side">
+              <section><h2>我的社区</h2><div><span><b>{ownedCommunityCount}</b><small>公开作品</small></span><span><b>{favoriteCommunityCount}</b><small>收藏图纸</small></span><span><b>{savedProjects.length}</b><small>本机作品</small></span></div><button onClick={() => openCommunityPublisher()}>选择作品发布</button></section>
+              <section className="community-guideline"><h2>发布说明</h2><p>默认只展示图纸、用色和创作说明。原图不会随作品发布；你可以随时撤下自己的作品。</p><button onClick={() => setShowHelp(true)}>查看内测帮助</button></section>
+            </aside>
+          </div>
+
+          {selectedCommunityPost && (
+            <div className="community-detail-backdrop" onMouseDown={() => setSelectedCommunityPost(null)}>
+              <section className="community-detail" role="dialog" aria-modal="true" aria-labelledby="community-detail-title" onMouseDown={(event) => event.stopPropagation()}>
+                <header><div><span>{selectedCommunityPost.category}</span><h2 id="community-detail-title">{selectedCommunityPost.title}</h2><p>{selectedCommunityPost.authorNickname} · {new Date(selectedCommunityPost.publishedAt).toLocaleDateString("zh-CN")}</p></div><button aria-label="关闭图纸详情" onClick={() => setSelectedCommunityPost(null)}>×</button></header>
+                <div className="community-detail-body">
+                  <div className="community-detail-art"><CommunityArtwork post={selectedCommunityPost} /></div>
+                  <div className="community-detail-info"><p>{selectedCommunityPost.description}</p><div className="community-detail-stats"><span><b>{selectedCommunityPost.size} × {selectedCommunityPost.size}</b><small>画布</small></span><span><b>{selectedCommunityPost.colorCount}</b><small>颜色</small></span><span><b>{selectedCommunityPost.beadCount.toLocaleString()}</b><small>豆子</small></span></div><div className="community-detail-palette"><h3>使用色板</h3><div>{selectedCommunityPost.palette.map((color, index) => <i key={`${selectedCommunityPost.id}-palette-${index}`} style={{ "--community-swatch": color } as CSSProperties} title={color} />)}</div></div><div className="community-detail-actions"><button className={selectedCommunityPost.likedByViewer ? "active" : ""} onClick={() => toggleCommunityPostReaction(selectedCommunityPost.id, "like")}>赞 {selectedCommunityPost.likeCount}</button><button className={selectedCommunityPost.favoritedByViewer ? "active" : ""} onClick={() => toggleCommunityPostReaction(selectedCommunityPost.id, "favorite")}>{selectedCommunityPost.favoritedByViewer ? "已收藏" : "收藏图纸"}</button>{selectedCommunityPost.ownedByViewer && <button className="remove" onClick={() => removeCommunityPost(selectedCommunityPost)}>撤下作品</button>}</div></div>
+                </div>
+              </section>
+            </div>
+          )}
+        </div>
+      )}
+
       {screen === "inventory" && (
         <div className="page inventory-page">
           <section className="page-title">
@@ -3384,6 +3929,10 @@ export default function Home() {
             <div className="title-actions"><input ref={inventoryFileRef} type="file" accept=".csv,text/csv" hidden onChange={importInventory} /><button className="secondary" onClick={() => inventoryFileRef.current?.click()}>导入 CSV</button><button className="secondary" onClick={exportInventory}>导出库存</button><button className="primary" onClick={() => { setInventoryAdderQuery(""); setShowInventoryAdder(true); }}>＋ 添加色号</button></div>
           </section>
           <div className="local-save-note"><span>✓</span><div><b>游客模式 · 已保存在本机</b><small>库存只保存在当前设备；可随时导出 CSV 备份或迁移。</small></div></div>
+          <section className="store-range-entry">
+            <div><span>在店里直接选色</span><h2>不用录库存，也能按货架色号生成</h2><p>选择品牌、系列和连续色号区间；店里缺货的色号点一下排除。</p></div>
+            <div className="store-range-entry-status"><b>{storePresets.length ? `${storePresets.length} 个店铺预设` : "临时范围也能用"}</b><small>不会写入或扣减库存</small><button onClick={() => setShowStorePalette(true)}>选择店内色号 →</button></div>
+          </section>
           <section className="inventory-overview">
             <div><span>库存总量</span><strong>{totalStock.toLocaleString()}<small> 颗</small></strong><em>{inventory.length ? `平均每色 ${Math.round(totalStock / inventory.length)} 颗` : "等待录入库存"}</em></div>
             <div><span>已录入色号</span><strong>{inventory.length}<small> 种</small></strong><em>{new Set(inventory.map((item) => item.brand)).size} 个品牌</em></div>
@@ -3396,15 +3945,15 @@ export default function Home() {
               <div className="table-row table-header"><span>颜色</span><span>色号</span><span>库存状态</span><span>现有数量</span><span>安全库存</span><span>操作</span></div>
               {filteredInventory.map((item) => {
                 const low = item.count < item.safe * 4;
-                const preferred = activePreferredColorKeys.includes(colorKey(item.brand, item.code));
+                const preferred = activePreferredColorKeys.includes(colorKey(item.brand, item.code, item.series));
                 return (
-                  <div className={`table-row ${preferred ? "is-preferred" : ""}`} key={`${item.brand}-${item.code}`}>
+                  <div className={`table-row ${preferred ? "is-preferred" : ""}`} key={colorKey(item.brand, item.code, item.series)}>
                     <span className="color-name"><i style={{ background: item.color }} />{item.name}</span>
-                    <span><b>{item.code}</b><small>{item.brand}</small></span>
+                    <span><b>{item.code}</b><small>{item.brand}{item.series ? ` · ${item.series}` : " · 历史数据"}</small></span>
                     <span><em className={preferred ? "status preferred" : low ? "status low" : "status good"}>{preferred ? "优先使用" : low ? "建议补充" : "充足"}</em></span>
-                    <span className="count-control"><button aria-label={`减少${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, -10)}>−</button><input aria-label={`${item.brand} ${item.code} 现有数量`} type="number" min="0" value={item.count} onChange={(event) => setInventoryAmount(item.brand, item.code, "count", Number(event.target.value))} /><button aria-label={`增加${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, 10)}>＋</button></span>
-                    <span><input className="stock-number-input" aria-label={`${item.brand} ${item.code} 安全库存`} type="number" min="0" value={item.safe} onChange={(event) => setInventoryAmount(item.brand, item.code, "safe", Number(event.target.value))} /><small>颗</small></span>
-                    <span className="inventory-row-actions"><button className={`text-button ${preferred ? "active" : ""}`} aria-pressed={preferred} onClick={() => togglePreferredColor(item.brand, item.code)}>{preferred ? "取消优先" : "优先使用"}</button><button className="text-button delete" onClick={() => removeInventoryColor(item.brand, item.code)}>删除</button></span>
+                    <span className="count-control"><button aria-label={`减少${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, -10, item.series)}>−</button><input aria-label={`${item.brand} ${item.code} 现有数量`} type="number" min="0" value={item.count} onChange={(event) => setInventoryAmount(item.brand, item.code, "count", Number(event.target.value), item.series)} /><button aria-label={`增加${item.brand}${item.name}`} onClick={() => adjustInventory(item.brand, item.code, 10, item.series)}>＋</button></span>
+                    <span><input className="stock-number-input" aria-label={`${item.brand} ${item.code} 安全库存`} type="number" min="0" value={item.safe} onChange={(event) => setInventoryAmount(item.brand, item.code, "safe", Number(event.target.value), item.series)} /><small>颗</small></span>
+                    <span className="inventory-row-actions"><button className={`text-button ${preferred ? "active" : ""}`} aria-pressed={preferred} onClick={() => togglePreferredColor(item.brand, item.code, item.series)}>{preferred ? "取消优先" : "优先使用"}</button><button className="text-button delete" onClick={() => removeInventoryColor(item.brand, item.code, item.series)}>删除</button></span>
                   </div>
                 );
               })}
@@ -3460,7 +4009,7 @@ export default function Home() {
               {(selectedBrand === "MARD" || selectedCrossBrandColors.length > 0) && <div className="series-filter"><button className={catalogSeries === "all" ? "active" : ""} onClick={() => { setCatalogSeries("all"); setCatalogPage(0); }}>全部系列</button>{catalogSeriesOptions.map((series) => <button key={series} className={catalogSeries === series ? "active" : ""} onClick={() => { setCatalogSeries(series); setCatalogPage(0); }}>{series}</button>)}</div>}
               <div className="master-swatches">
                 {visibleCatalog.map((item) => (
-                  <button key={item.code} onClick={() => addCatalogColor(item.code, item.color)} title={`${item.code} · ${item.color}`}>
+                  <button key={`${item.series}-${item.code}`} onClick={() => addCatalogColor(item.code, item.color, item.series)} title={`${item.series} · ${item.code} · ${item.color}`}>
                     <i style={{ background: item.color }}><span /></i><b>{item.code}</b><small>{selectedBrand === "MARD" ? item.confidence === "cross-reference" ? "交叉参考" : item.range === "base" ? "基础参考" : "扩展参考" : selectedCrossBrandColors.length ? item.name : "待校准"}</small>
                   </button>
                 ))}
@@ -3504,7 +4053,7 @@ export default function Home() {
             <aside className="create-setup-summary" aria-label="当前图纸设置">
               <span><b>{gridSize} × {gridSize}</b><small>画布</small></span>
               <span><b>{maxColors} 色</b><small>颜色上限</small></span>
-              <span><b>{ignoreStock ? "完整色库" : `${inventory.length} 个库存色`}</b><small>用色范围</small></span>
+              <span><b>{paletteSourceLabel}</b><small>用色范围</small></span>
             </aside>
           </section>
           <section className="create-layout">
@@ -3538,6 +4087,16 @@ export default function Home() {
                   <button className={imageSampling === "pixel" ? "active" : ""} onClick={() => setImageSampling("pixel")}><b>像素原图</b><small>保留硬边，不混合相邻颜色</small></button>
                 </div>
               </div>
+              <div className="setting-block palette-source-setting">
+                <label>用色来源 <span>{paletteSource === "inventory" ? "会核对并结算库存" : paletteSource === "store" ? "按店内可买色号" : "不受当前库存限制"}</span></label>
+                <p>先决定系统可以从哪里选色；店内色号是临时范围，不需要逐个录入颗数。</p>
+                <div className="palette-source-grid">
+                  <button aria-pressed={paletteSource === "inventory"} className={paletteSource === "inventory" ? "active" : ""} onClick={() => setPaletteSource("inventory")}><i>库</i><span><b>我的库存</b><small>{inventory.length} 个已录入色号</small></span><em>{paletteSource === "inventory" ? "✓" : ""}</em></button>
+                  <button aria-pressed={paletteSource === "store"} className={paletteSource === "store" ? "active" : ""} onClick={() => setShowStorePalette(true)}><i>店</i><span><b>店内可买</b><small>{paletteSource === "store" ? `${storePalette.brand} · ${storePaletteResult.colors.length} 色` : "按品牌和区间快速锁定"}</small></span><em>{paletteSource === "store" ? "修改" : "设置"}</em></button>
+                  <button aria-pressed={paletteSource === "reference"} className={paletteSource === "reference" ? "active" : ""} onClick={() => setPaletteSource("reference")}><i>全</i><span><b>完整色卡</b><small>MARD 公开参考色</small></span><em>{paletteSource === "reference" ? "✓" : ""}</em></button>
+                </div>
+                {paletteSource === "store" && <div className="active-store-scope"><span>{storePalette.brand}</span><b>{storePalette.ranges.length} 个区间 · 可用 {storePaletteResult.colors.length} 色</b><small>生成和完成作品都不会改动库存</small><button onClick={() => setShowStorePalette(true)}>修改范围</button></div>}
+              </div>
               <div className="setting-block"><label>生成策略</label><div className="strategy-grid">
                 {[{id:"zero",title:"零补货",desc:"完全使用现有库存"},{id:"balance",title:"平衡方案",desc:"允许少量补货"},{id:"quality",title:"效果优先",desc:"保留最多细节"}].map((item) => <button key={item.id} className={strategy === item.id ? "selected" : ""} onClick={() => setStrategy(item.id as Strategy)}><i /><b>{item.title}</b><small>{item.desc}</small></button>)}
               </div></div>
@@ -3553,24 +4112,24 @@ export default function Home() {
                 </div>
                 {maxColors >= 128 && <p className="color-count-warning">超精细配色会产生更多零散色块，建议搭配大画布，并在生成后使用“一键去杂色”。</p>}
               </div>
-              <div className="setting-block color-selection-setting">
+              {paletteSource === "inventory" && <div className="setting-block color-selection-setting">
                 <label>指定使用颜色 <span>{selectedGenerationColors.length ? `已选 ${selectedGenerationColors.length} 种` : "自动配色"}</span></label>
                 <p>只让图纸使用你勾选的库存色；不选择时，系统会按策略自动挑色。</p>
                 <button className={`color-picker-trigger ${showColorPicker ? "active" : ""}`} onClick={() => setShowColorPicker(!showColorPicker)}>
-                  <span className="selected-color-preview">{selectedGenerationColors.slice(0, 8).map((item) => <i key={colorKey(item.brand, item.code)} style={{ background: item.color }} />)}{!selectedGenerationColors.length && <i className="auto-palette">∞</i>}</span>
+                  <span className="selected-color-preview">{selectedGenerationColors.slice(0, 8).map((item) => <i key={colorKey(item.brand, item.code, item.series)} style={{ background: item.color }} />)}{!selectedGenerationColors.length && <i className="auto-palette">∞</i>}</span>
                   <b>{selectedGenerationColors.length ? `管理已选 ${selectedGenerationColors.length} 种颜色` : "从库存中选择颜色"}</b><em>{showColorPicker ? "收起 ↑" : "展开 ↓"}</em>
                 </button>
                 {showColorPicker && <div className="allowed-color-panel">
-                  <div className="allowed-color-actions"><span>当前库存共 {inventory.length} 个色号</span><div><button onClick={() => setSelectedColorKeys(inventory.map((item) => colorKey(item.brand, item.code)))}>全选库存色</button><button onClick={() => setSelectedColorKeys([])}>恢复自动</button></div></div>
+                  <div className="allowed-color-actions"><span>当前库存共 {inventory.length} 个色号</span><div><button onClick={() => setSelectedColorKeys(inventory.map((item) => colorKey(item.brand, item.code, item.series)))}>全选库存色</button><button onClick={() => setSelectedColorKeys([])}>恢复自动</button></div></div>
                   <div className="allowed-color-grid">
                     {inventory.map((item) => {
-                      const selected = activeSelectedColorKeys.includes(colorKey(item.brand, item.code));
-                      return <button key={colorKey(item.brand, item.code)} className={selected ? "selected" : ""} aria-pressed={selected} onClick={() => toggleGenerationColor(item.brand, item.code)}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand} · {item.count} 颗</small></span><em>{selected ? "✓" : "+"}</em></button>;
+                      const selected = activeSelectedColorKeys.includes(colorKey(item.brand, item.code, item.series));
+                      return <button key={colorKey(item.brand, item.code, item.series)} className={selected ? "selected" : ""} aria-pressed={selected} onClick={() => toggleGenerationColor(item.brand, item.code, item.series)}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.brand}{item.series ? ` · ${item.series}` : ""} · {item.count} 颗</small></span><em>{selected ? "✓" : "+"}</em></button>;
                     })}
                   </div>
                   {activeSelectedColorKeys.length > 0 && activeSelectedColorKeys.length < 3 && <p className="color-selection-warning">还需选择 {3 - activeSelectedColorKeys.length} 种颜色才能生成。</p>}
                 </div>}
-              </div>
+              </div>}
               <div className="setting-block color-shift-setting">
                 <label>色彩偏转 <span>{({ original: "保持原图", warm: "偏暖修正", cool: "偏冷修正", bright: "提亮修正", soft: "柔和修正" } as Record<ColorShift, string>)[colorShift]}</span></label>
                 <p>当屏幕颜色与豆子效果不协调时，先调整整体色调，再重新匹配库存色号。</p>
@@ -3586,12 +4145,7 @@ export default function Home() {
               </div>
               <div className="setting-row"><div><label>细节优先规则</label><p>选色时优先保留轮廓、眼睛和高对比细节</p></div><span className="rule-state">自动应用</span></div>
               <div className="setting-row"><div><label>安全库存规则</label><p>库存生成会预留每个色号的安全颗数</p></div><span className="rule-state">自动应用</span></div>
-              <button className={`ignore-stock-option ${ignoreStock ? "active" : ""}`} onClick={() => setIgnoreStock(!ignoreStock)} aria-pressed={ignoreStock}>
-                <span className="infinity-mark">∞</span>
-                <span><b>无视当前库存</b><small>按 MARD 公开参考色库生成，缺豆会进入采购清单</small></span>
-                <span className={`toggle ${ignoreStock ? "on" : ""}`}><i /></span>
-              </button>
-              <button className="generate-button" onClick={generate} disabled={isGenerating}>{isGenerating ? <><i className="spinner" /> 正在计算全局配色…</> : <>{selectedGenerationColors.length ? `从已选 ${selectedGenerationColors.length} 色中最多使用 ${maxColors} 色` : ignoreStock ? "按 MARD 参考色库生成图纸" : "生成库存适配图纸"} <span>→</span></>}</button>
+              <button className="generate-button" onClick={generate} disabled={isGenerating || (paletteSource === "store" && storePaletteResult.colors.length < 3)}>{isGenerating ? <><i className="spinner" /> 正在计算全局配色…</> : <>{paletteSource === "store" ? `使用店内 ${storePaletteResult.colors.length} 色生成图纸` : paletteSource === "reference" ? "按 MARD 完整参考色卡生成" : selectedGenerationColors.length ? `从已选 ${selectedGenerationColors.length} 色中最多使用 ${maxColors} 色` : "生成库存适配图纸"} <span>→</span></>}</button>
               <p className="privacy-note">图片只在当前设备的浏览器里处理，不会上传或公开</p>
             </div>
           </section>
@@ -3609,7 +4163,7 @@ export default function Home() {
           <div className="page plans-page workflow-content">
           <section className="plans-heading"><div><span className="step-tag">03 · 方案对比</span><h1>同一张图，三种完成方式</h1><p>并排比较最终效果、用豆量和缺色风险。</p><small className="live-metrics-note">● 已按本次图片与当前库存实时计算</small></div><button className="secondary" onClick={() => go("create")}>← 调整设置</button></section>
           {colorShift !== "original" && <div className="color-shift-banner"><span>◐</span><div><b>已应用{({ warm: "偏暖", cool: "偏冷", bright: "提亮", soft: "柔和", original: "原图" } as Record<ColorShift, string>)[colorShift]}偏转</b><small>三套方案都基于修正后的色调匹配；如仍不合适，可返回切换其他方向。</small></div><button onClick={() => go("create")}>更换偏转</button></div>}
-          {ignoreStock && <div className="ignore-stock-banner"><span>∞</span><div><b>已无视当前库存</b><small>下列方案按完整品牌色库生成；缺少的颜色不会被替换，并会加入采购清单。</small></div><button onClick={() => { setIgnoreStock(false); go("create"); }}>恢复库存约束</button></div>}
+          {paletteSource !== "inventory" && <div className="ignore-stock-banner"><span>{paletteSource === "store" ? "店" : "∞"}</span><div><b>{paletteSource === "store" ? `${storePalette.brand} 店内可买模式` : "MARD 完整参考色卡"}</b><small>{paletteSource === "store" ? "只使用已锁定的店内色号；采购清单按整件作品计算，完成时不扣库存。" : "不受当前库存限制；缺少的颜色会进入采购清单。"}</small></div><button onClick={() => { setPaletteSource("inventory"); go("create"); }}>改用我的库存</button></div>}
           <section className="plan-grid">
             {plans.map((plan) => {
               const metrics = metricsByPlan[plan.id];
@@ -3697,7 +4251,7 @@ export default function Home() {
                   <div className="chart-title"><div><b>{projectDisplayTitle}</b><span>{craftSize} × {craftSize} · 每格均标注品牌色号</span></div><em>每 5 格橙色分区</em></div>
                   <PatternChart cells={displayPattern} size={craftSize} zoom={chartZoom} highlight={replacementPreview ? null : chartHighlight} editable={editMode} dragEditable={editMode && continuousEdit && (editTool === "paint" || editTool === "erase")} selectedIndexes={selectedEditIndexes} onCellEdit={handleCellEdit} onCellStrokeStart={handleCellStrokeStart} onCellStrokeMove={handleCellStrokeMove} onCellStrokeEnd={handleCellStrokeEnd} onZoomChange={editMode ? undefined : setChartZoom} />
                   <div className="pattern-legend" aria-label="图纸颜色用量">
-                    {craftUsage.map((item) => { const key = colorKey(item.brand, item.code); return <button key={key} onClick={() => { setReplacementPreview(null); if (editMode) { setEditColor({ brand: item.brand, code: item.code, color: item.color, name: item.name }); setEditTool(editTool === "select" ? "select" : "paint"); } else { setHighlight(highlight === key ? null : key); } }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.brand} · {item.name}</span><strong>{editMode ? "设为修图颜色" : `${item.count} 颗`}</strong></button>; })}
+                    {craftUsage.map((item) => { const key = resolvedColorKey(item); return <button key={key} onClick={() => { setReplacementPreview(null); if (editMode) { setEditColor({ brand: item.brand, series: item.series, code: item.code, color: item.color, name: item.name }); setEditTool(editTool === "select" ? "select" : "paint"); } else { setHighlight(highlight === key ? null : key); } }} style={{ background: item.color, color: textColor(item.color) }}><b>{item.code}</b><span>{item.brand}{item.series ? ` · ${item.series}` : ""} · {item.name}</span><strong>{editMode ? "设为修图颜色" : `${item.count} 颗`}</strong></button>; })}
                   </div>
                 </div>
               ) : patternView === "section" ? (
@@ -3734,12 +4288,12 @@ export default function Home() {
               <div className="coordinate-hint">{editMode ? "修图模式：点击或轻触格子修改；画笔颜色也可从下方图例直接选择" : patternView === "preview" ? "手机可双指缩放、单指拖动，双击恢复 100%；也可使用上方按钮" : patternView === "chart" ? "手机可双指缩放、单指滚动，双击恢复 100%；点击右侧颜色可高亮色号" : "可横向、纵向滚动查看；点击右侧颜色可高亮该色号"}</div>
             </div>
             <aside className="craft-sidebar panel">
-              <div className="progress-head"><div><span>制作进度</span><strong>{actualProgress}%</strong></div><div className="progress-track"><i style={{ width: `${actualProgress}%` }} /></div><p>{completedColors.filter((key) => generatedUsage.some((item) => colorKey(item.brand, item.code) === key)).length} / {generatedUsage.length} 个颜色已完成</p></div>
+              <div className="progress-head"><div><span>制作进度</span><strong>{actualProgress}%</strong></div><div className="progress-track"><i style={{ width: `${actualProgress}%` }} /></div><p>{completedColors.filter((key) => generatedUsage.some((item) => resolvedColorKey(item) === key)).length} / {generatedUsage.length} 个颜色已完成</p></div>
               <div className="color-tasks">
                 {generatedUsage.map((item) => {
-                  const key = colorKey(item.brand, item.code);
+                  const key = resolvedColorKey(item);
                   const done = completedColors.includes(key);
-                  return <button key={key} className={`${highlight === key ? "active" : ""} ${done ? "done" : ""}`} onClick={() => { setReplacementPreview(null); setHighlight(highlight === key ? null : key); }}><i style={{ background: item.color }} /><span><b>{item.code} · {item.name}</b><small>{item.brand} · {item.count} 颗</small></span><em onClick={(event) => { event.stopPropagation(); setCompletedColors(done ? completedColors.filter((itemKey) => itemKey !== key) : [...completedColors, key]); }}>{done ? "✓" : "○"}</em></button>;
+                  return <button key={key} className={`${highlight === key ? "active" : ""} ${done ? "done" : ""}`} onClick={() => { setReplacementPreview(null); setHighlight(highlight === key ? null : key); }}><i style={{ background: item.color }} /><span><b>{item.code} · {item.name}</b><small>{item.brand}{item.series ? ` · ${item.series}` : ""} · {item.count} 颗</small></span><em onClick={(event) => { event.stopPropagation(); setCompletedColors(done ? completedColors.filter((itemKey) => itemKey !== key) : [...completedColors, key]); }}>{done ? "✓" : "○"}</em></button>;
                 })}
               </div>
               {generatedPatterns && highlight && highlightedUsage && <div className="color-replace-panel">
@@ -3750,19 +4304,19 @@ export default function Home() {
                   {replacementBrands.map((brand) => <button key={brand} className={replacementBrand === brand ? "active" : ""} onClick={() => { setReplacementBrand(brand); setReplacementPreview(null); }}><b>{brand}</b><small>{brand === "MARD" ? 291 : crossBrandColors.filter((item) => item.brand === brand).length} 色</small></button>)}
                 </div>
                 <div className="replacement-options">
-                  {replacementOptions.map((option) => <button key={`${option.brand}-${option.code}`} className={replacementPreview?.brand === option.brand && replacementPreview?.toCode === option.code ? "active" : ""} onClick={() => setReplacementPreview({ fromBrand: highlightedUsage.brand, fromCode: highlightedUsage.code, brand: option.brand, toCode: option.code, color: option.color, name: option.name, label: option.label })}>
+                  {replacementOptions.map((option) => <button key={colorKey(option.brand, option.code, option.series)} className={replacementPreview?.brand === option.brand && replacementPreview?.series === option.series && replacementPreview?.toCode === option.code ? "active" : ""} onClick={() => setReplacementPreview({ fromBrand: highlightedUsage.brand, fromSeries: highlightedUsage.series, fromCode: highlightedUsage.code, brand: option.brand, series: option.series, toCode: option.code, color: option.color, name: option.name, label: option.label })}>
                     <i style={{ background: option.color }} /><span><em>{option.label} · {option.brand}</em><b>{option.code}</b><small>{option.name} · 近似 {option.similarity}%</small></span><strong className={option.shortage ? "short" : "enough"}>{option.shortage ? `缺 ${option.shortage}` : `可用 ${option.available}`}</strong>
                   </button>)}
                 </div>
                 {replacementPreview && <div className="replace-confirm"><div><i style={{ background: highlightedUsage.color }} /><span>→</span><i style={{ background: replacementPreview.color }} /><b>{highlightedUsage.brand} {highlightedUsage.code} → {replacementPreview.brand} {replacementPreview.toCode}</b></div><p>这是屏幕参考色近似匹配，不等于实物测色；确认后会重新计算品牌用量和缺货。</p><div><button onClick={() => setReplacementPreview(null)}>取消</button><button className="apply" onClick={applyReplacement}>确认替换 {replacementNeeded} 格</button></div></div>}
               </div>}
-              {generatedPatterns && <button className={`batch-summary ${resolvedBatchReplacements.length ? "ready" : "unavailable"}`} onClick={openBatchReplace}>
+              {generatedPatterns && paletteSource !== "store" && <button className={`batch-summary ${resolvedBatchReplacements.length ? "ready" : "unavailable"}`} onClick={openBatchReplace}>
                 <span>⇄</span><div><small>库存优先 · 跨品牌</small><b>{purchaseItems.length ? resolvedBatchReplacements.length ? `可一键替换 ${resolvedBatchReplacements.length} 个缺货色` : "暂未找到足量近似库存" : "当前没有缺货颜色"}</b><p>先预览整批换色，再决定是否应用</p></div><em>智能换色 →</em>
               </button>}
               <button className={`purchase-summary ${purchaseItems.length ? "has-shortage" : "enough"}`} onClick={openShoppingList}>
-                <span>{purchaseItems.length ? "袋" : "✓"}</span><div><small>智能采购清单</small><b>{purchaseItems.length ? `缺 ${purchaseItems.length} 个色号 · ${purchaseTotal} 颗` : "当前库存已经足够"}</b><p>已自动扣除可用库存，并保留安全库存</p></div><em>查看 →</em>
+                <span>{purchaseItems.length ? "袋" : "✓"}</span><div><small>{paletteSource === "store" ? "到店采购清单" : "智能采购清单"}</small><b>{purchaseItems.length ? `${paletteSource === "store" ? "需买" : "缺"} ${purchaseItems.length} 个色号 · ${purchaseTotal} 颗` : "当前库存已经足够"}</b><p>{paletteSource === "store" ? "按整件作品统计店内购买数量" : "已自动扣除可用库存，并保留安全库存"}</p></div><em>查看 →</em>
               </button>
-              <div className="smart-tip"><span>✦</span><div><b>{ignoreStock ? "采购清单模式" : "库存提醒"}</b><p>{ignoreStock ? "缺少的颜色会完整保留，并自动计算需要购买的数量。" : generatedPatterns ? "这张图已经按当前安全库存重新分配颜色。" : "示例图也会根据你的本机库存计算采购缺口。"}</p></div></div>
+              <div className="smart-tip"><span>✦</span><div><b>{paletteSource === "store" ? "店内可买模式" : ignoreStock ? "采购清单模式" : "库存提醒"}</b><p>{paletteSource === "store" ? `图纸只用了 ${storePalette.brand} 店内范围中的色号，完成作品不会扣库存。` : ignoreStock ? "缺少的颜色会完整保留，并自动计算需要购买的数量。" : generatedPatterns ? "这张图已经按当前安全库存重新分配颜色。" : "示例图也会根据你的本机库存计算采购缺口。"}</p></div></div>
             </aside>
           </section>
           </div>
@@ -3773,26 +4327,26 @@ export default function Home() {
         <div className="shopping-backdrop" onMouseDown={() => setShowShoppingList(false)}>
           <section className="shopping-dialog" role="dialog" aria-modal="true" aria-labelledby="shopping-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="shopping-head">
-              <div><span className="step-tag">库存自动核算</span><h2 id="shopping-title">智能采购清单</h2><p>图纸用量减去可用库存，安全库存不会被占用。</p></div>
+              <div><span className="step-tag">{paletteSource === "store" ? "店内可买 · 整件统计" : "库存自动核算"}</span><h2 id="shopping-title">{paletteSource === "store" ? "到店采购清单" : "智能采购清单"}</h2><p>{paletteSource === "store" ? "这里列出整件作品需要购买的全部色号与颗数。" : "图纸用量减去可用库存，安全库存不会被占用。"}</p></div>
               <button aria-label="关闭采购清单" onClick={() => setShowShoppingList(false)}>×</button>
             </header>
             <div className="shopping-overview">
               <div><small>需要购买</small><strong>{purchaseItems.length}<em> 色</em></strong></div>
-              <div><small>合计缺口</small><strong>{purchaseTotal.toLocaleString()}<em> 颗</em></strong></div>
+              <div><small>{paletteSource === "store" ? "预计购买" : "合计缺口"}</small><strong>{purchaseTotal.toLocaleString()}<em> 颗</em></strong></div>
               <div><small>图纸总量</small><strong>{craftPattern.filter(Boolean).length.toLocaleString()}<em> 颗</em></strong></div>
             </div>
-            <div className="shopping-note"><span>✦</span><p>缺口按“当前库存 − 安全预留”计算。换色或修改库存后，清单会立即更新。</p></div>
+            <div className="shopping-note"><span>✦</span><p>{paletteSource === "store" ? "数量按当前图纸完整用量计算；购入后可勾选色号并直接加入库存。" : "缺口按“当前库存 − 安全预留”计算。换色或修改库存后，清单会立即更新。"}</p></div>
             <div className="shopping-list">
               {purchaseGroups.length ? purchaseGroups.map((group) => (
                 <div className="shopping-brand-group" key={group.brand}>
-                  <div className="shopping-brand-head"><div><b>{group.brand}</b><span>{group.items.length} 个色号 · 共 {group.items.reduce((sum, item) => sum + item.shortage, 0)} 颗</span></div><button onClick={() => { const groupKeys = group.items.map((item) => `${item.brand}::${item.code}`); const allSelected = groupKeys.every((key) => selectedPurchaseKeys.includes(key)); setSelectedPurchaseKeys((keys) => allSelected ? keys.filter((key) => !groupKeys.includes(key)) : [...new Set([...keys, ...groupKeys])]); }}>{group.items.every((item) => selectedPurchaseKeys.includes(`${item.brand}::${item.code}`)) ? "取消全选" : "全选"}</button></div>
+                  <div className="shopping-brand-head"><div><b>{group.brand}</b><span>{group.items.length} 个色号 · 共 {group.items.reduce((sum, item) => sum + item.shortage, 0)} 颗</span></div><button onClick={() => { const groupKeys = group.items.map(resolvedColorKey); const allSelected = groupKeys.every((key) => selectedPurchaseKeys.includes(key)); setSelectedPurchaseKeys((keys) => allSelected ? keys.filter((key) => !groupKeys.includes(key)) : [...new Set([...keys, ...groupKeys])]); }}>{group.items.every((item) => selectedPurchaseKeys.includes(resolvedColorKey(item))) ? "取消全选" : "全选"}</button></div>
                   {group.items.map((item) => {
-                    const purchaseKey = `${group.brand}::${item.code}`;
+                    const purchaseKey = resolvedColorKey(item);
                     const selected = selectedPurchaseKeys.includes(purchaseKey);
                     return (
-                    <div className={`shopping-row ${selected ? "selected" : ""}`} key={`${group.brand}-${item.code}`}>
+                    <div className={`shopping-row ${selected ? "selected" : ""}`} key={purchaseKey}>
                       <button className="purchase-check" aria-label={`${selected ? "取消选择" : "选择"} ${group.brand} ${item.code}`} aria-pressed={selected} onClick={() => togglePurchaseItem(purchaseKey)} style={{ "--purchase-color": item.color } as CSSProperties}><span>{selected ? "✓" : ""}</span></button>
-                      <div className="shopping-color"><b>{item.code}</b><span>{item.name}</span></div>
+                      <div className="shopping-color"><b>{item.code}</b><span>{item.series ? `${item.series} · ` : ""}{item.name}</span></div>
                       <div><small>图纸</small><strong>{item.count}</strong></div>
                       <div><small>库存</small><strong>{item.current}</strong></div>
                       <div><small>预留</small><strong>{item.safe}</strong></div>
@@ -3828,10 +4382,10 @@ export default function Home() {
             <div className="shopping-note batch-note"><span>!</span><p>为保持图纸颜色一致，每个缺货色会整组替换，而不是只替换缺少的几颗；本次预计改动 {batchChangedCells.toLocaleString()} 格。</p></div>
             <div className="shopping-list batch-list">
               {batchReplacementPlan.length ? batchReplacementPlan.map(({ source, target }) => (
-                <div className={`batch-row ${target ? "resolved" : "unresolved"}`} key={`${source.brand}-${source.code}`}>
-                  <div className="batch-color"><i style={{ background: source.color }} /><span><small>原色 · 缺 {source.shortage}</small><b>{source.brand} {source.code}</b><em>{source.name}</em></span></div>
+                <div className={`batch-row ${target ? "resolved" : "unresolved"}`} key={resolvedColorKey(source)}>
+                  <div className="batch-color"><i style={{ background: source.color }} /><span><small>原色 · 缺 {source.shortage}</small><b>{source.brand} {source.code}</b><em>{source.series ? `${source.series} · ` : ""}{source.name}</em></span></div>
                   <span className="batch-arrow">→</span>
-                  {target ? <div className="batch-color target"><i style={{ background: target.color }} /><span><small>库存可用 {target.available}</small><b>{target.brand} {target.code}</b><em>{target.name}</em></span></div> : <div className="batch-no-match"><b>保留原色</b><span>没有数量足够且达到 {batchSimilarity}% 的库存色</span></div>}
+                  {target ? <div className="batch-color target"><i style={{ background: target.color }} /><span><small>库存可用 {target.available}</small><b>{target.brand} {target.code}</b><em>{target.series ? `${target.series} · ` : ""}{target.name}</em></span></div> : <div className="batch-no-match"><b>保留原色</b><span>没有数量足够且达到 {batchSimilarity}% 的库存色</span></div>}
                   <div className={`batch-score ${target ? "good" : "none"}`}><small>屏幕近似</small><strong>{target ? `${target.similarity}%` : "—"}</strong></div>
                 </div>
               )) : <div className="shopping-empty"><span>✓</span><h3>当前没有缺货颜色</h3><p>无需批量替换，可以直接开始制作。</p></div>}
@@ -3844,6 +4398,73 @@ export default function Home() {
       {showImageCropper && cropSource && (
         <div className="crop-backdrop" onPointerDown={() => setShowImageCropper(false)}>
           <ImageCropper source={cropSource} onCancel={() => setShowImageCropper(false)} onApply={(image) => acceptUploadedImage(image, true)} onUseOriginal={() => acceptUploadedImage(cropSource, false)} />
+        </div>
+      )}
+
+      {showStorePalette && (
+        <div className="shopping-backdrop store-palette-backdrop" onMouseDown={() => setShowStorePalette(false)}>
+          <section className="shopping-dialog store-palette-dialog" role="dialog" aria-modal="true" aria-labelledby="store-palette-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="shopping-head store-palette-head">
+              <div><span className="step-tag">不用录库存 · 到店快速选色</span><h2 id="store-palette-title">店内色号范围</h2><p>先选品牌和系列，再圈出货架上的连续色号。店里没有的颜色，点一下排除。</p></div>
+              <button aria-label="关闭店内色号范围" onClick={() => setShowStorePalette(false)}>×</button>
+            </header>
+            <div className="store-palette-scroll">
+              <section className="store-brand-step">
+                <div className="store-step-heading"><span>01</span><div><b>选择品牌</b><small>只显示已经有可计算屏幕色的品牌</small></div></div>
+                <div className="store-brand-grid" aria-label="选择店内拼豆品牌">
+                  {paletteBrands.map((brand) => <button key={brand} aria-pressed={storePalette.brand === brand} className={storePalette.brand === brand ? "active" : ""} onClick={() => changeStorePaletteBrand(brand)}><b>{brand}</b><small>{paletteSeries(brand).length} 个系列</small></button>)}
+                </div>
+              </section>
+
+              <section className="store-range-step">
+                <div className="store-step-heading"><span>02</span><div><b>添加货架区间</b><small>按当前色卡的收录顺序计算，反向选择也会自动归一</small></div></div>
+                <div className="store-range-list">
+                  {storePalette.ranges.map((range, rangeIndex) => {
+                    const seriesColors = storeBrandCatalog.filter((item) => item.series === range.series);
+                    const normalized = storePaletteResult.normalizedRanges.find((item) => item.id === range.id);
+                    const colorCount = normalized ? (storeBrandCatalog.filter((item) => item.series === normalized.series).findIndex((item) => item.code === normalized.toCode) - storeBrandCatalog.filter((item) => item.series === normalized.series).findIndex((item) => item.code === normalized.fromCode) + 1) : 0;
+                    return <div className={`store-range-row ${storePaletteResult.invalidRangeIds.includes(range.id) ? "invalid" : ""}`} key={range.id}>
+                      <div className="store-range-row-head"><b>区间 {rangeIndex + 1}</b><span>{normalized ? `${normalized.fromCode}–${normalized.toCode} · ${colorCount} 色` : "色号需要重新选择"}</span><button disabled={storePalette.ranges.length === 1} onClick={() => setStorePalette((current) => ({ ...current, ranges: current.ranges.filter((item) => item.id !== range.id), updatedAt: Date.now() }))}>移除</button></div>
+                      <div className="store-range-fields">
+                        <label><span>系列 / 尺寸</span><select value={range.series} onChange={(event) => updateStoreRange(range.id, { series: event.target.value })}>{storeSeriesOptions.map((series) => <option key={series} value={series}>{series}</option>)}</select></label>
+                        <label><span>起始色号</span><select value={range.fromCode} onChange={(event) => updateStoreRange(range.id, { fromCode: event.target.value })}>{seriesColors.map((item) => <option key={`from-${range.id}-${item.code}`} value={item.code}>{item.code}</option>)}</select></label>
+                        <label><span>结束色号</span><select value={range.toCode} onChange={(event) => updateStoreRange(range.id, { toCode: event.target.value })}>{seriesColors.map((item) => <option key={`to-${range.id}-${item.code}`} value={item.code}>{item.code}</option>)}</select></label>
+                        <button onClick={() => selectWholeStoreSeries(range.id)}>整个系列</button>
+                      </div>
+                    </div>;
+                  })}
+                </div>
+                <button className="store-add-range" onClick={addStoreRange}>＋ 添加另一个区间</button>
+              </section>
+
+              <section className="store-exclude-step">
+                <div className="store-step-heading"><span>03</span><div><b>排除店内缺货</b><small>颜色默认可买；点击色号即可在可买与排除之间切换</small></div></div>
+                <div className="store-bulk-exclude"><input aria-label="批量排除店内缺货色号" placeholder="如 A13、A14、C2" value={storeExcludeInput} onChange={(event) => setStoreExcludeInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") applyBulkStoreExclusions(); }} /><button disabled={!storeExcludeInput.trim()} onClick={applyBulkStoreExclusions}>批量排除</button><button disabled={!storePalette.excludedKeys.length} onClick={() => setStorePalette((current) => ({ ...current, excludedKeys: [], updatedAt: Date.now() }))}>全部恢复</button></div>
+                <div className="store-color-grid">
+                  {storePaletteUnion.map((color) => {
+                    const key = catalogColorKey(color.brand, color.series, color.code);
+                    const excluded = storePalette.excludedKeys.includes(key);
+                    return <button className={excluded ? "excluded" : ""} aria-label={`${color.series} ${color.code}，${excluded ? "已排除" : "店内可买"}`} aria-pressed={excluded} key={key} onClick={() => toggleStoreColor(color)} title={`${color.brand} · ${color.series} · ${color.code}`}><i style={{ background: color.color }} /><span><b>{color.code}</b><small>{excluded ? "已排除" : "店内可买"}</small></span><em>{excluded ? "＋" : "×"}</em></button>;
+                  })}
+                  {!storePaletteUnion.length && <div className="store-colors-empty">先添加至少一个有效色号区间</div>}
+                </div>
+              </section>
+
+              <section className="store-save-step">
+                <div className="store-save-heading"><span>{localBetaEntitlement.label}</span><div><b>把这家店保存下来</b><small>店铺方案、导入和导出均为免费功能</small></div></div>
+                <div className="store-preset-form"><input aria-label="店铺预设名称" placeholder={`例如：学校旁边的 ${storePalette.brand} 店`} value={storePresetName} onChange={(event) => setStorePresetName(event.target.value)} /><button onClick={saveStorePreset}>保存预设</button><input ref={storePaletteFileRef} type="file" accept=".yilihua-store,application/json" hidden onChange={importStorePreset} /><button onClick={() => storePaletteFileRef.current?.click()}>导入</button><button onClick={() => exportStorePreset()}>导出当前</button></div>
+                {storePresets.length > 0 && <div className="store-preset-list">{storePresets.map((preset) => {
+                  const resolved = resolveStorePalette(preset);
+                  return <div key={preset.id}><span><b>{preset.name}</b><small>{preset.brand} · {preset.ranges.length} 个区间 · {resolved.colors.length} 色</small></span><button onClick={() => applySavedStorePreset(preset)}>使用</button><button onClick={() => exportStorePreset(preset)}>导出</button><button className="delete" onClick={() => deleteStorePreset(preset.id)}>删除</button></div>;
+                })}</div>}
+              </section>
+            </div>
+            <footer className="store-palette-footer">
+              <div aria-live="polite"><span>范围 {storePaletteResult.selectedCount} 色</span><span>已排除 {Math.max(0, storePaletteResult.selectedCount - storePaletteResult.colors.length)} 色</span><b>最终可用 {storePaletteResult.colors.length} 色</b></div>
+              <p>{storePaletteResult.colors.length < 3 ? `还需要 ${3 - storePaletteResult.colors.length} 种颜色才能生成` : "只影响本次选色，不会写入或扣减库存"}</p>
+              <button onClick={() => setShowStorePalette(false)}>先不使用</button><button className="primary" disabled={storePaletteResult.colors.length < 3 || Boolean(storePaletteResult.invalidRangeIds.length)} onClick={() => applyStorePalette()}>使用这 {storePaletteResult.colors.length} 个色号</button>
+            </footer>
+          </section>
         </div>
       )}
 
@@ -3865,8 +4486,8 @@ export default function Home() {
             <label className="inventory-adder-search">⌕ <input aria-label="搜索要添加的色号" placeholder={`搜索 ${inventoryAdderBrand} 色号、名称或 HEX`} value={inventoryAdderQuery} onChange={(event) => setInventoryAdderQuery(event.target.value)} /></label>
             <div className="inventory-adder-grid">
               {visibleInventoryAdderColors.map((item) => {
-                const existing = inventoryKeys.has(colorKey(item.brand, item.code));
-                return <button className={existing ? "existing" : ""} key={`${item.brand}-${item.code}`} onClick={() => addInventoryColor(item)} title={`${item.brand} ${item.code} · ${item.color}`}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.name}</small></span><em>{existing ? `再加 ${inventoryAddCount}` : "＋ 加入"}</em></button>;
+                const existing = inventoryKeys.has(colorKey(item.brand, item.code, item.series));
+                return <button className={existing ? "existing" : ""} key={colorKey(item.brand, item.code, item.series)} onClick={() => addInventoryColor(item)} title={`${item.brand} · ${item.series} · ${item.code} · ${item.color}`}><i style={{ background: item.color }} /><span><b>{item.code}</b><small>{item.series} · {item.name}</small></span><em>{existing ? `再加 ${inventoryAddCount}` : "＋ 加入"}</em></button>;
               })}
               {!visibleInventoryAdderColors.length && <div className="inventory-adder-empty">没有找到匹配色号</div>}
             </div>
@@ -3909,12 +4530,12 @@ export default function Home() {
         <div className="shopping-backdrop" onMouseDown={() => setShowHelp(false)}>
           <section className="shopping-dialog formal-help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="shopping-head">
-              <div><span className="step-tag">正式版使用帮助</span><h2 id="help-title">第一次用，从这里开始</h2><p>一粒画不需要账号，图片、库存和作品都优先留在当前设备。</p></div>
+              <div><span className="step-tag">2.0 内测版使用帮助</span><h2 id="help-title">第一次用，从这里开始</h2><p>内测版不需要账号，图片、库存和作品都保存在当前设备。</p></div>
               <button aria-label="关闭使用帮助" onClick={() => setShowHelp(false)}>×</button>
             </header>
             <div className="formal-help-steps">
               <article><span>1</span><div><b>上传并整理图片</b><p>裁出主体，也可以在本机完成文字消除和连通背景清理。</p></div></article>
-              <article><span>2</span><div><b>选择库存或参考色库</b><p>录入自己的豆子会得到可直接制作的方案；无视库存则使用 MARD 公开参考色。</p></div></article>
+              <article><span>2</span><div><b>选择这次从哪里取色</b><p>可使用自己的库存、店内可买色号区间，或 MARD 完整参考色卡。</p></div></article>
               <article><span>3</span><div><b>生成、比较和精修</b><p>从三种方案中选择，去杂色、换色或逐格修图后再进入制作。</p></div></article>
               <article><span>4</span><div><b>制作与备份</b><p>按品牌色号逐格查看，完成时只结算一次库存；项目包可跨设备迁移。</p></div></article>
             </div>
@@ -3954,9 +4575,10 @@ export default function Home() {
         <button className={screen === "home" ? "active" : ""} aria-current={screen === "home" ? "page" : undefined} onClick={() => go("home")}><span>首</span>首页</button>
         <button className={screen === "inventory" ? "active" : ""} aria-current={screen === "inventory" ? "page" : undefined} onClick={() => go("inventory")}><span>库</span>库存</button>
         <button className="mobile-create" aria-label="开始新作品" onClick={() => go("create")}><span>＋</span></button>
+        <button className={screen === "community" ? "active" : ""} aria-current={screen === "community" ? "page" : undefined} onClick={() => go("community")}><span>社</span>社区</button>
         <button className={screen === "craft" ? "active" : ""} aria-current={screen === "craft" ? "page" : undefined} disabled={!generatedPatterns} onClick={() => go("craft")}><span>作</span>制作</button>
-        <button className={screen === "catalog" ? "active" : ""} aria-current={screen === "catalog" ? "page" : undefined} onClick={() => go("catalog")}><span>色</span>色库</button>
       </nav>
+      {communityUndo && <div className="community-undo" role="status"><span>“{communityUndo.title}”已从社区撤下</span><button onClick={undoCommunityRemoval}>撤销</button></div>}
       {toast && <div className="toast" role="status" aria-live="polite">{toast}</div>}
     </main>
   );
