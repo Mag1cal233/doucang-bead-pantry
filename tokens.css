@@ -1,0 +1,64 @@
+:root {
+  --color-paper: oklch(98.3% 0.009 348);
+  --color-paper-2: oklch(96.5% 0.018 344);
+  --color-surface: oklch(100% 0 0);
+  --color-surface-muted: oklch(97.2% 0.012 346);
+  --color-ink: oklch(27% 0.028 342);
+  --color-ink-2: oklch(48% 0.025 342);
+  --color-rule: oklch(90.5% 0.021 345);
+  --color-rule-strong: oklch(82% 0.034 345);
+  --color-accent: oklch(64% 0.19 350);
+  --color-accent-hover: oklch(56% 0.2 350);
+  --color-accent-soft: oklch(94.5% 0.043 350);
+  --color-accent-ink: oklch(100% 0 0);
+  --color-violet: oklch(67% 0.14 303);
+  --color-violet-soft: oklch(94% 0.038 303);
+  --color-mint: oklch(79% 0.07 160);
+  --color-mint-soft: oklch(96% 0.025 160);
+  --color-sun: oklch(84% 0.12 83);
+  --color-focus: oklch(56% 0.18 303);
+  --color-success: oklch(56% 0.1 160);
+  --color-warning: oklch(64% 0.14 70);
+  --color-danger: oklch(57% 0.2 25);
+  --color-overlay: oklch(20% 0.025 342 / 0.44);
+
+  --font-display: ui-rounded, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+  --space-3xl: 7rem;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.5rem;
+  --text-display: clamp(2.75rem, 6vw, 5rem);
+  --text-display-s: clamp(2.25rem, 5vw, 4rem);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.32, 0, 0.67, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-short: 160ms;
+  --dur-medium: 260ms;
+  --dur-long: 420ms;
+
+  --rule-hairline: 1px solid var(--color-rule);
+  --rule-strong: 1px solid var(--color-rule-strong);
+  --radius-input: 0.75rem;
+  --radius-button: 0.875rem;
+  --radius-card: 1.5rem;
+  --radius-panel: 2rem;
+  --radius-pill: 999px;
+  --shadow-card: 0 1.25rem 3.5rem oklch(35% 0.045 345 / 0.09);
+  --shadow-float: 0 1rem 2rem oklch(35% 0.045 345 / 0.14);
+}

@@ -37,7 +37,10 @@ test("server-renders the 一粒画 product shell", async () => {
   assert.match(html, /<title>一粒画｜把喜欢，一粒粒拼出来<\/title>/i);
   assert.match(html, /把喜欢/);
   assert.match(html, /开始图片转拼豆/);
-  assert.match(html, /我的库存/);
+  assert.match(html, /豆子库存/);
+  assert.match(html, /正式版 1\.0/);
+  assert.match(html, /图片只在你的设备上处理/);
+  assert.doesNotMatch(html, /class="print-book"/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
 });
 
@@ -144,7 +147,18 @@ test("ships an installable offline app with mobile image capture and safe local 
   assert.match(page, /context\.putImageData\(removeConnectedBackground/);
   assert.match(css, /\.crop-background-preview/);
   assert.match(css, /\.crop-background-controls/);
-  assert.match(serviceWorker, /yilihua-shell-v2/);
+  assert.match(page, /const swatches: Swatch\[\] = \[\]/);
+  assert.match(page, /inventoryDebited/);
+  assert.match(page, /colorKey\(cell\.brand \?\? "MARD", cell\.code\)/);
+  assert.match(page, /file\.size > 20 \* 1024 \* 1024/);
+  assert.match(page, /file\.size > 10 \* 1024 \* 1024/);
+  assert.match(page, /navigator\.storage\?\.persist/);
+  assert.match(page, /role="status" aria-live="polite"/);
+  assert.match(css, /\.formal-home \.product-launcher/);
+  assert.match(css, /@media \(max-width: 900px\)/);
+  assert.match(css, /button:focus-visible/);
+  assert.match(layout, /doucang-social-preview\.png/);
+  assert.match(serviceWorker, /yilihua-shell-v3/);
   assert.match(serviceWorker, /SKIP_WAITING/);
   assert.match(serviceWorker, /request\.mode === "navigate"/);
 });

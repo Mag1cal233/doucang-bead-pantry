@@ -1,8 +1,10 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://doucang.xyz"),
+  applicationName: "一粒画",
+  category: "design",
   title: "一粒画｜把喜欢，一粒粒拼出来",
   description: "上传图片，按真实豆子库存、指定色号与颜色数量生成清晰拼豆图纸，并自动计算用量、缺货和替代色。",
   alternates: { canonical: "/doucang-bead-pantry/" },
@@ -13,12 +15,26 @@ export const metadata: Metadata = {
     siteName: "一粒画",
     title: "一粒画｜把喜欢，一粒粒拼出来",
     description: "按库存与指定色号生成拼豆图纸，一键去杂色，自动计算用量与缺货。",
+    images: [{ url: "https://doucang.xyz/doucang-bead-pantry/doucang-social-preview.png", width: 1200, height: 630, alt: "一粒画拼豆图纸创作台" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "一粒画｜把喜欢，一粒粒拼出来",
     description: "按库存与指定色号生成拼豆图纸，一键去杂色，自动计算用量与缺货。",
+    images: ["https://doucang.xyz/doucang-bead-pantry/doucang-social-preview.png"],
   },
+  icons: {
+    icon: "https://doucang.xyz/doucang-bead-pantry/yilihua-icon.svg",
+    apple: "https://doucang.xyz/doucang-bead-pantry/yilihua-icon.svg",
+  },
+  robots: { index: true, follow: true },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#fff7fb",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

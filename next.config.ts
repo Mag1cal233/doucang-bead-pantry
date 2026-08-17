@@ -9,9 +9,6 @@ const nextConfig: NextConfig = {
   images: { unoptimized: true },
   basePath: pagesBasePath || undefined,
   assetPrefix: pagesBasePath || undefined,
-  typescript: {
-    ignoreBuildErrors: process.env.GITHUB_PAGES === "true",
-  },
 };
 
 export default nextConfig;

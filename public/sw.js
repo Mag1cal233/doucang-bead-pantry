@@ -1,4 +1,4 @@
-const CACHE_NAME = "yilihua-shell-v2";
+const CACHE_NAME = "yilihua-shell-v3";
 const APP_SCOPE = new URL(self.registration.scope).pathname.replace(/\/$/, "");
 const appUrl = (path = "") => `${APP_SCOPE}/${path}`.replace(/\/+/g, "/");
 const SHELL = [appUrl(), appUrl("manifest.webmanifest")];
@@ -28,9 +28,10 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)
-        .then((response) => {
+        .then(async (response) => {
           const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(appUrl(), copy));
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(appUrl(), copy);
           return response;
         })
         .catch(() => caches.match(appUrl())),
@@ -39,8 +40,12 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    caches.match(request).then((cached) => cached || fetch(request).then((response) => {
-      if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
+    caches.match(request).then((cached) => cached || fetch(request).then(async (response) => {
+      const destination = request.destination;
+      if (response.ok && ["style", "script", "image", "font"].includes(destination)) {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(request, response.clone());
+      }
       return response;
     })),
   );

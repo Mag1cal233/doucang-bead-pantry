@@ -1,0 +1,12 @@
+{
+  "scannedAt": "2026-08-17T19:52:44+08:00",
+  "packageMtimeUtc": "2026-07-29T10:44:29.2363664Z",
+  "scope": "app",
+  "framework": "Next.js 16 app router with vinext",
+  "fontStack": "Microsoft YaHei, PingFang SC, Noto Sans SC; rounded display treatment on the current home",
+  "palette": "legacy sage tokens plus later pink/purple overrides",
+  "motion": "motion-cut; no animation library",
+  "spacing": "mixed raw values; formal version introduces a 4-point semantic scale",
+  "preserve": ["Chinese system font performance", "local-first product model", "pink cute-minimal direction", "existing product workflows"],
+  "introduce": ["locked design tokens", "task-first home", "consistent focus states", "formal release trust and recovery surfaces"]
+}
