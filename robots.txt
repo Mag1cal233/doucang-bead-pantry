@@ -1,0 +1,4 @@
+User-Agent: *
+Allow: /
+
+Sitemap: https://doucang.xyz/doucang-bead-pantry/sitemap.xml
