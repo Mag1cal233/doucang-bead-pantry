@@ -1,4 +1,4 @@
-const CACHE_NAME = "yilihua-shell-v3";
+const CACHE_NAME = "yilihua-shell-v4";
 const APP_SCOPE = new URL(self.registration.scope).pathname.replace(/\/$/, "");
 const appUrl = (path = "") => `${APP_SCOPE}/${path}`.replace(/\/+/g, "/");
 const SHELL = [appUrl(), appUrl("manifest.webmanifest")];
